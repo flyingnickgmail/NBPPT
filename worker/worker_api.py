@@ -441,10 +441,14 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
                         yield f"data: {json.dumps({'type': 'progress', 'pct': 38, 'message_cn': f'[阶段二 · 交由 Codex 直接生成] 已将 {target_slides} 页高清纯图片 PPT 提示词发给本机 Codex (gpt-6-astra)，正在调用内置 image_gen 逐页出图...'}, ensure_ascii=False)}\n\n"
 
                         codex_env = child_env.copy()
+                        codex_env["HOME"] = str(pathlib.Path.home())
                         if safe_proxy:
                             codex_env["HTTP_PROXY"] = safe_proxy
                             codex_env["HTTPS_PROXY"] = safe_proxy
                             codex_env["ALL_PROXY"] = safe_proxy
+
+                        cfg_path = pathlib.Path.home() / ".codex" / "config.toml"
+                        cfg_text = cfg_path.read_text(encoding="utf-8", errors="ignore") if cfg_path.exists() else ""
 
                         codex_cmd = [
                             CODEX_BIN,
@@ -453,54 +457,72 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
                             "gpt-6-astra",
                             "-c",
                             'model_reasoning_effort="low"',
-                            "-c",
-                            "mcp_servers.chrome-devtools.enabled=false",
-                            "-c",
-                            "mcp_servers.context7.enabled=false",
-                            "-c",
-                            "mcp_servers.magic.enabled=false",
-                            "-c",
-                            "mcp_servers.sequential-thinking.enabled=false",
-                            "-c",
-                            "mcp_servers.playwright.enabled=false",
-                            "-c",
-                            "mcp_servers.ce-context7.enabled=false",
-                            "-c",
-                            "mcp_servers.gitnexus.enabled=false",
-                            "--dangerously-bypass-approvals-and-sandbox",
-                            "--skip-git-repo-check",
-                            codex_prompt,
                         ]
-                        proc = await asyncio.create_subprocess_exec(
-                            *codex_cmd,
-                            cwd=str(job_dir),
-                            env=codex_env,
-                            stdin=asyncio.subprocess.DEVNULL,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
+                        for mcp_name in (
+                            "chrome-devtools",
+                            "context7",
+                            "magic",
+                            "sequential-thinking",
+                            "playwright",
+                            "ce-context7",
+                            "gitnexus",
+                        ):
+                            if f"mcp_servers.{mcp_name}" in cfg_text or f'mcp_servers."{mcp_name}"' in cfg_text:
+                                codex_cmd.extend(["-c", f"mcp_servers.{mcp_name}.enabled=false"])
+
+                        codex_cmd.extend(
+                            [
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "--skip-git-repo-check",
+                                codex_prompt,
+                            ]
                         )
 
-                        last_reported_count = 0
-                        elapsed = 0.0
-                        timeout_sec = max(180.0, target_slides * 65.0)
-                        while proc.returncode is None and elapsed < timeout_sec:
-                            await asyncio.sleep(2.5)
-                            elapsed += 2.5
-                            cur_imgs = _collect_new_codex_images(job_start_ts, assets_dir, target_slides)
-                            if len(cur_imgs) > last_reported_count:
-                                last_reported_count = len(cur_imgs)
-                                pct_now = min(86, 40 + int((last_reported_count / max(1, target_slides)) * 46))
-                                live_cdn = upload_job_artifacts_to_cdn(req.job_id, output_dir)
-                                yield f"data: {json.dumps({'type': 'progress', 'pct': pct_now, 'message_cn': f'[Codex image_gen 实时出图] 已完成第 {last_reported_count}/{target_slides} 页 16:9 纯图片幻灯片渲染...', 'cdn_urls': live_cdn}, ensure_ascii=False)}\n\n"
-                                if last_reported_count >= target_slides:
-                                    await asyncio.sleep(1.5)
-                                    break
-                            elif int(elapsed) % 15 == 0:
-                                pct_wait = min(82, 40 + int((elapsed / timeout_sec) * 40))
-                                yield f"data: {json.dumps({'type': 'progress', 'pct': pct_wait, 'message_cn': f'[Codex 正在绘制幻灯片] gpt-6-astra 正在渲染第 { min(last_reported_count + 1, target_slides) }/{target_slides} 页高清咨询排版图 ({int(elapsed)}s)...'}, ensure_ascii=False)}\n\n"
+                        codex_log_path = job_dir / "codex_exec.log"
+                        with open(codex_log_path, "wb") as codex_log_fp:
+                            proc = await asyncio.create_subprocess_exec(
+                                *codex_cmd,
+                                cwd=str(job_dir),
+                                env=codex_env,
+                                stdin=asyncio.subprocess.DEVNULL,
+                                stdout=codex_log_fp,
+                                stderr=codex_log_fp,
+                            )
 
-                        if proc.returncode is None:
-                            proc.kill()
+                            last_reported_count = 0
+                            elapsed = 0.0
+                            timeout_sec = max(180.0, target_slides * 65.0)
+                            while proc.returncode is None and elapsed < timeout_sec:
+                                await asyncio.sleep(2.5)
+                                elapsed += 2.5
+                                cur_imgs = _collect_new_codex_images(job_start_ts, assets_dir, target_slides)
+                                if len(cur_imgs) > last_reported_count:
+                                    last_reported_count = len(cur_imgs)
+                                    pct_now = min(86, 40 + int((last_reported_count / max(1, target_slides)) * 46))
+                                    live_cdn = upload_job_artifacts_to_cdn(req.job_id, output_dir)
+                                    yield f"data: {json.dumps({'type': 'progress', 'pct': pct_now, 'message_cn': f'[Codex image_gen 实时出图] 已完成第 {last_reported_count}/{target_slides} 页 16:9 纯图片幻灯片渲染...', 'cdn_urls': live_cdn}, ensure_ascii=False)}\n\n"
+                                    if last_reported_count >= target_slides:
+                                        await asyncio.sleep(1.5)
+                                        break
+                                elif int(elapsed) % 15 == 0:
+                                    pct_wait = min(82, 40 + int((elapsed / timeout_sec) * 40))
+                                    yield f"data: {json.dumps({'type': 'progress', 'pct': pct_wait, 'message_cn': f'[Codex 正在绘制幻灯片] gpt-6-astra 正在渲染第 { min(last_reported_count + 1, target_slides) }/{target_slides} 页高清咨询排版图 ({int(elapsed)}s)...'}, ensure_ascii=False)}\n\n"
+
+                            if proc.returncode is None:
+                                proc.kill()
+
+                        final_imgs = _collect_new_codex_images(job_start_ts, assets_dir, target_slides)
+                        if not final_imgs:
+                            ppt_script = SKILLS_ROOT / "pptx-pro" / "scripts" / "build_deck.py"
+                            final_pptx = output_dir / f"{req.job_id}_deck.pptx"
+                            if ppt_script.exists():
+                                yield f"data: {json.dumps({'type': 'progress', 'pct': 82, 'message_cn': '[Codex 兜底保障引擎] 正在使用高精矢量渲染引擎构建 16:9 幻灯片与预览图...'}, ensure_ascii=False)}\n\n"
+                                await run_python_skill_script(
+                                    ppt_script,
+                                    ["--spec", str(spec_file), "--assets", str(assets_dir), "--out", str(final_pptx)],
+                                    cwd=job_dir,
+                                    env=codex_env,
+                                )
                         total_cost_usd += 0.08 * target_slides
 
                     else:
