@@ -1,0 +1,29 @@
+# Python & Virtual Environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environment & Local Secrets
+.env
+.env.local
+workspace/data/*.db
+workspace/data/*.db-journal
+workspace/data/*.sqlite*
+workspace/data/runtime_settings.json
+
+# Generated Runtime Job Artifacts
+workspace/jobs/
+workspace/cdn_storage/
+
+# Third-party heavy PPT template repositories (cloned on demand)
+worker/external_ppt_skills/
+
+# macOS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.log
