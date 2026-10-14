@@ -303,8 +303,10 @@ def _build_codex_direct_prompt(spec: Dict[str, Any]) -> str:
     Build the exact prompt sent to `codex exec` when the user chooses Codex to generate the PPT directly.
     Instructs Codex to call its built-in `image_gen` tool for each slide, save each PNG to
     `./output/assets/slide_preview_<N>.png`, and assemble `./output/<job_id>_deck.pptx` using
-    `/Users/flyignick/.codex/skills/client-ci-ppt-image-deck/scripts/images_to_pptx.py`.
+    `~/.codex/skills/client-ci-ppt-image-deck/scripts/images_to_pptx.py`.
     """
+    home_dir = str(pathlib.Path.home())
+    img2pptx = f"{home_dir}/.codex/skills/client-ci-ppt-image-deck/scripts/images_to_pptx.py"
     slides = spec.get("slide_outline", [])
     total = len(slides)
     per_slide_blocks = []
@@ -321,7 +323,7 @@ def _build_codex_direct_prompt(spec: Dict[str, Any]) -> str:
         f"1. Call your built-in `image_gen` tool once for each of the {total} slides below to generate high-resolution 16:9 consulting slide images.\n"
         f"2. Immediately after generating each slide image, copy the generated PNG file from `~/.codex/generated_images/...` to `./output/assets/slide_preview_<N>.png` (where N is 1..{total}).\n"
         f"3. After all {total} slide images are saved in `./output/assets/`, assemble them into a 16:9 PowerPoint file by running:\n"
-        f"   `python3 /Users/flyignick/.codex/skills/client-ci-ppt-image-deck/scripts/images_to_pptx.py --image-dir ./output/assets --out ./output/final_deck.pptx`\n\n"
+        f"   `python3 {img2pptx} --image-dir ./output/assets --out ./output/final_deck.pptx`\n\n"
         + "\n\n".join(per_slide_blocks)
     )
 
@@ -330,14 +332,16 @@ def _build_claude_direct_prompt(spec: Dict[str, Any]) -> str:
     """
     Build the exact prompt sent to `claude -p` when the user chooses Claude Code CLI to generate the PPT directly.
     """
+    home_dir = str(pathlib.Path.home())
+    base_dir = str(pathlib.Path(__file__).resolve().parent.parent)
     tpl_id = spec.get("matched_template", {}).get("id", "yonyou-ci-bg")
     return (
         f"You are executing a non-interactive PPT generation job in the current working directory.\n"
         f"Read `./slide_script.md` and `./task_spec.json`.\n"
         f"Matched Template / Skill: {tpl_id}\n"
         f"Execute the following steps immediately without asking questions:\n"
-        f"1. Run `node /Users/flyignick/.codex/skills/client-ci-ppt-image-deck/scripts/markdown_script_to_ci_pptx.mjs --source ./slide_script.md --out ./output/final_deck.pptx` "
-        f"(or if `{tpl_id}` is a `gorden:*` template, run `/Users/flyignick/Code/person-work/.venv/bin/python /Users/flyignick/Code/person-work/worker/agent_skills/.claude/skills/pptx-pro/scripts/build_deck.py --spec ./task_spec.json --assets ./output/assets --out ./output/final_deck.pptx`).\n"
+        f"1. Run `node {home_dir}/.codex/skills/client-ci-ppt-image-deck/scripts/markdown_script_to_ci_pptx.mjs --source ./slide_script.md --out ./output/final_deck.pptx` "
+        f"(or if `{tpl_id}` is a `gorden:*` template, run `{base_dir}/.venv/bin/python {base_dir}/worker/agent_skills/.claude/skills/pptx-pro/scripts/build_deck.py --spec ./task_spec.json --assets ./output/assets --out ./output/final_deck.pptx`).\n"
         f"2. Verify that `./output/final_deck.pptx` exists and is non-empty, then reply with `CLAUDE_PPT_DONE`."
     )
 

@@ -40,8 +40,38 @@ WORKSPACE_JOBS_DIR = BASE_DIR / "workspace" / "jobs"
 WORKSPACE_JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
 WORKER_SECRET = os.getenv("OVERSEAS_WORKER_SECRET", "super-secret-mtls-token-2026")
-CLAUDE_BIN = os.getenv("CLAUDE_BIN", "/Users/flyignick/.local/bin/claude")
-CODEX_BIN = os.getenv("CODEX_BIN", "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+CLAUDE_BIN = (
+    os.getenv("CLAUDE_BIN")
+    or shutil.which("claude")
+    or next(
+        (
+            p
+            for p in [
+                str(pathlib.Path.home() / ".local" / "bin" / "claude"),
+                "/usr/local/bin/claude",
+                "/usr/bin/claude",
+            ]
+            if pathlib.Path(p).exists()
+        ),
+        "/usr/local/bin/claude",
+    )
+)
+CODEX_BIN = (
+    os.getenv("CODEX_BIN")
+    or shutil.which("codex")
+    or next(
+        (
+            p
+            for p in [
+                "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+                "/usr/local/bin/codex",
+                "/usr/bin/codex",
+            ]
+            if pathlib.Path(p).exists()
+        ),
+        "/usr/local/bin/codex",
+    )
+)
 CODEX_GENERATED_IMAGES_DIR = pathlib.Path.home() / ".codex" / "generated_images"
 IMAGES_TO_PPTX_SCRIPT = pathlib.Path.home() / ".codex" / "skills" / "client-ci-ppt-image-deck" / "scripts" / "images_to_pptx.py"
 MD_TO_CI_PPTX_SCRIPT = pathlib.Path.home() / ".codex" / "skills" / "client-ci-ppt-image-deck" / "scripts" / "markdown_script_to_ci_pptx.mjs"

@@ -31,22 +31,30 @@ TASK_FREEZE_CREDITS = {
     "composite": 120,
 }
 
+import shutil
+
 CODEX_BIN_CANDIDATES = [
+    os.getenv("CODEX_BIN", ""),
+    shutil.which("codex") or "",
     "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
-    "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
+    "/usr/bin/codex",
+    "/opt/homebrew/bin/codex",
 ]
 CLAUDE_BIN_CANDIDATES = [
-    "/Users/flyignick/.local/bin/claude",
-    "/opt/homebrew/bin/claude",
+    os.getenv("CLAUDE_BIN", ""),
+    shutil.which("claude") or "",
+    str(pathlib.Path.home() / ".local" / "bin" / "claude"),
     "/usr/local/bin/claude",
+    "/usr/bin/claude",
+    "/opt/homebrew/bin/claude",
 ]
 
 
 def detect_local_cli_accounts() -> Dict[str, Any]:
     """Detect real logged-in Codex CLI, Claude CLI, and cc-switch providers on this machine."""
-    codex_bin = next((p for p in CODEX_BIN_CANDIDATES if pathlib.Path(p).exists()), "")
-    claude_bin = next((p for p in CLAUDE_BIN_CANDIDATES if pathlib.Path(p).exists()), "")
+    codex_bin = next((p for p in CODEX_BIN_CANDIDATES if p and pathlib.Path(p).exists()), "")
+    claude_bin = next((p for p in CLAUDE_BIN_CANDIDATES if p and pathlib.Path(p).exists()), "")
 
     codex_auth_file = pathlib.Path.home() / ".codex" / "auth.json"
     codex_config_file = pathlib.Path.home() / ".codex" / "config.toml"
