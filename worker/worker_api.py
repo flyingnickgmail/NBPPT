@@ -152,9 +152,13 @@ def _collect_new_codex_images(since_ts: float, assets_dir: pathlib.Path, target_
             continue
 
     # Also include any `slide_preview_*.png` that Codex copied directly into `assets_dir`
+    def _num_key(p: pathlib.Path) -> int:
+        digits = "".join(ch for ch in p.stem if ch.isdigit())
+        return int(digits) if digits else 999
+
     existing = sorted(
         [p for p in assets_dir.glob("slide_preview_[1-9]*.png") if p.stat().st_size > 20_000],
-        key=lambda p: p.name,
+        key=_num_key,
     )
     return existing if len(existing) >= len(copied_slides) else copied_slides
 
@@ -485,8 +489,12 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
                             cur_imgs = _collect_new_codex_images(job_start_ts, assets_dir, target_slides)
                             if len(cur_imgs) > last_reported_count:
                                 last_reported_count = len(cur_imgs)
-                                pct_now = min(84, 40 + int((last_reported_count / max(1, target_slides)) * 44))
-                                yield f"data: {json.dumps({'type': 'progress', 'pct': pct_now, 'message_cn': f'[Codex image_gen 实时出图] 已完成第 {last_reported_count}/{target_slides} 页 16:9 纯图片幻灯片渲染...'}, ensure_ascii=False)}\n\n"
+                                pct_now = min(86, 40 + int((last_reported_count / max(1, target_slides)) * 46))
+                                live_cdn = upload_job_artifacts_to_cdn(req.job_id, output_dir)
+                                yield f"data: {json.dumps({'type': 'progress', 'pct': pct_now, 'message_cn': f'[Codex image_gen 实时出图] 已完成第 {last_reported_count}/{target_slides} 页 16:9 纯图片幻灯片渲染...', 'cdn_urls': live_cdn}, ensure_ascii=False)}\n\n"
+                                if last_reported_count >= target_slides:
+                                    await asyncio.sleep(1.5)
+                                    break
                             elif int(elapsed) % 15 == 0:
                                 pct_wait = min(82, 40 + int((elapsed / timeout_sec) * 40))
                                 yield f"data: {json.dumps({'type': 'progress', 'pct': pct_wait, 'message_cn': f'[Codex 正在绘制幻灯片] gpt-6-astra 正在渲染第 { min(last_reported_count + 1, target_slides) }/{target_slides} 页高清咨询排版图 ({int(elapsed)}s)...'}, ensure_ascii=False)}\n\n"

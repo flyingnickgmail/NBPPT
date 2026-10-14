@@ -264,6 +264,8 @@ def _get_pil_font(size: int) -> ImageFont.FreeTypeFont:
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     ]
     for c in candidates:
         if pathlib.Path(c).exists():

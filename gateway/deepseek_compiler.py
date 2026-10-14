@@ -12,7 +12,9 @@ Workflow:
 import asyncio
 import json
 import os
+import pathlib
 import re
+import sys
 from typing import Dict, Any, Optional, List
 import httpx
 
@@ -301,29 +303,24 @@ def _build_markdown_slide_script(spec: Dict[str, Any]) -> str:
 def _build_codex_direct_prompt(spec: Dict[str, Any]) -> str:
     """
     Build the exact prompt sent to `codex exec` when the user chooses Codex to generate the PPT directly.
-    Instructs Codex to call its built-in `image_gen` tool for each slide, save each PNG to
-    `./output/assets/slide_preview_<N>.png`, and assemble `./output/<job_id>_deck.pptx` using
-    `~/.codex/skills/client-ci-ppt-image-deck/scripts/images_to_pptx.py`.
+    Instructs Codex to call its built-in `image_gen` tool for each slide in order, while Stage 3
+    automatically collects the generated 1672x941 PNGs and packages them into `<job_id>_deck.pptx`
+    via `images_to_pptx.py`.
     """
-    home_dir = str(pathlib.Path.home())
-    img2pptx = f"{home_dir}/.codex/skills/client-ci-ppt-image-deck/scripts/images_to_pptx.py"
     slides = spec.get("slide_outline", [])
     total = len(slides)
     per_slide_blocks = []
     for idx, s in enumerate(slides, 1):
         img_p = s.get("image_gen_prompt", "")
         per_slide_blocks.append(
-            f"=== SLIDE {idx} OF {total} (save to ./output/assets/slide_preview_{idx}.png) ===\n{img_p}"
+            f"=== SLIDE {idx} OF {total} ===\n{img_p}"
         )
 
     return (
-        f"You are executing a non-interactive PPT generation job in the current working directory.\n"
-        f"Do NOT ask any clarifying questions. Do NOT scan unrelated directories.\n"
-        f"Follow `$client-ci-ppt-image-deck` pure-image PPT workflow:\n"
-        f"1. Call your built-in `image_gen` tool once for each of the {total} slides below to generate high-resolution 16:9 consulting slide images.\n"
-        f"2. Immediately after generating each slide image, copy the generated PNG file from `~/.codex/generated_images/...` to `./output/assets/slide_preview_<N>.png` (where N is 1..{total}).\n"
-        f"3. After all {total} slide images are saved in `./output/assets/`, assemble them into a 16:9 PowerPoint file by running:\n"
-        f"   `python3 {img2pptx} --image-dir ./output/assets --out ./output/final_deck.pptx`\n\n"
+        f"You are executing a non-interactive pure-image PPT generation job.\n"
+        f"Do NOT ask any clarifying questions. Do NOT run any shell/bash commands or inspect directories.\n"
+        f"Your ONLY task is to call your built-in `image_gen` tool once for each of the {total} slides below (in order from SLIDE 1 to SLIDE {total}) to render high-resolution 16:9 consulting slide images.\n"
+        f"As soon as all {total} slide images have been generated via `image_gen`, immediately reply with `CODEX_IMAGES_DONE`.\n\n"
         + "\n\n".join(per_slide_blocks)
     )
 

@@ -311,7 +311,15 @@ async def stream_create_job(req: CreateJobRequest):
                             continue
                         evt = json.loads(line[6:])
                         if evt.get("type") == "progress":
-                            yield f"data: {json.dumps({'type': 'progress', 'pct': evt['pct'], 'job_id': job_id, 'message_cn': evt['message_cn']}, ensure_ascii=False)}\n\n"
+                            prog_payload = {
+                                "type": "progress",
+                                "pct": evt["pct"],
+                                "job_id": job_id,
+                                "message_cn": evt["message_cn"],
+                            }
+                            if evt.get("cdn_urls"):
+                                prog_payload["cdn_urls"] = evt["cdn_urls"]
+                            yield f"data: {json.dumps(prog_payload, ensure_ascii=False)}\n\n"
                         elif evt.get("type") == "completed":
                             final_worker_evt = evt
                         elif evt.get("type") == "error":
