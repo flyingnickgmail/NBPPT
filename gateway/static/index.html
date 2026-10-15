@@ -951,6 +951,7 @@
 
     function renderOutlineAndSlides(enSpec) {
       if (!enSpec) return;
+      const safeText = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       const tpl = enSpec.matched_template || {};
       document.getElementById("matchedTemplateBadge").textContent = `母版：${tpl.name || enSpec.template_id}`;
       document.getElementById("compilerEngineBadge").textContent = enSpec.compiler_engine || "Master Agent";
@@ -963,11 +964,11 @@
       const banner = document.getElementById("masterOutlineBanner");
       banner.innerHTML = `
         <div class="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b" style="border-color: var(--border-hairline);">
-          <div class="font-semibold" style="color: var(--text-primary);">核心主旨：${masterOutline.core_thesis || enSpec.task_summary_cn || ""}</div>
-          <span class="text-[11px] font-mono-code" style="color: var(--accent-brand);">${tpl.match_reason_cn || ""}</span>
+          <div class="font-semibold" style="color: var(--text-primary);">核心主旨：${safeText(masterOutline.core_thesis || enSpec.task_summary_cn)}</div>
+          <span class="text-[11px] font-mono-code" style="color: var(--accent-brand);">${safeText(tpl.match_reason_cn)}</span>
         </div>
-        <div class="pt-1" style="color: var(--text-secondary);"><span style="color: var(--text-muted);">叙事主线：</span>${masterOutline.narrative_arc || ""}</div>
-        <div class="text-[11px] pt-0.5" style="color: var(--text-muted);">${chain.join(" ｜ ")}</div>
+        <div class="pt-1" style="color: var(--text-secondary);"><span style="color: var(--text-muted);">叙事主线：</span>${safeText(masterOutline.narrative_arc)}</div>
+        <div class="text-[11px] pt-0.5" style="color: var(--text-muted);">${safeText(chain.join(" ｜ "))}</div>
       `;
 
       const slides = enSpec.slide_outline || [];
@@ -980,16 +981,16 @@
         <div class="studio-inset p-3.5 flex flex-col justify-between gap-2">
           <div>
             <div class="flex items-center justify-between text-[11px] font-mono-code mb-1" style="color: var(--accent-brand);">
-              <span>SLIDE ${sNo} · ${pageType}</span>
-              <span style="color: var(--text-muted);">${s.kicker || ''}</span>
+              <span>SLIDE ${safeText(sNo)} · ${safeText(pageType)}</span>
+              <span style="color: var(--text-muted);">${safeText(s.kicker)}</span>
             </div>
-            <div class="text-xs font-semibold leading-snug" style="color: var(--text-primary);">${s.action_title_cn || ''}</div>
-            <div class="text-[11px] mt-0.5" style="color: var(--text-secondary);">${s.subtitle_cn || ''}</div>
+            <div class="text-xs font-semibold leading-snug" style="color: var(--text-primary);">${safeText(s.action_title_cn)}</div>
+            <div class="text-[11px] mt-0.5" style="color: var(--text-secondary);">${safeText(s.key_message_cn || s.subtitle_cn)}</div>
           </div>
           <ul class="space-y-1 pt-2 border-t text-[11px]" style="border-color: var(--border-hairline); color: var(--text-secondary);">
-            ${(s.bullets_cn || []).map((b, idx) => `<li class="flex items-start gap-1.5"><span class="font-mono-code font-medium" style="color: var(--text-muted);">0${idx+1}</span><span>${b}</span></li>`).join("")}
+            ${(s.bullets_cn || s.source_quotes || []).map((b, idx) => `<li class="flex items-start gap-1.5"><span class="font-mono-code font-medium" style="color: var(--text-muted);">0${idx+1}</span><span>${safeText(b)}</span></li>`).join("")}
           </ul>
-          ${flowText ? `<div class="text-[10px] font-mono-code pt-1.5 border-t" style="border-color: var(--border-hairline); color: var(--accent-brand);">闭环：${flowText}</div>` : ""}
+          ${flowText ? `<div class="text-[10px] font-mono-code pt-1.5 border-t" style="border-color: var(--border-hairline); color: var(--accent-brand);">闭环：${safeText(flowText)}</div>` : ""}
         </div>
       `;
       }).join("");

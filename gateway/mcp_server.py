@@ -18,7 +18,7 @@ from gateway.config import (
     TASK_FREEZE_CREDITS,
 )
 from gateway.billing_tcc import BillingManager
-from gateway.deepseek_compiler import compile_cn_request_to_english_spec
+from gateway.deepseek_compiler import compile_cn_request_to_english_spec, validate_direct_completion
 
 MCP_TOOLS_MANIFEST = [
     {
@@ -145,6 +145,10 @@ async def execute_mcp_tool_call(
 
         if not final_payload:
             raise RuntimeError("海外/本地算力底座未返回完成结果")
+
+        if en_spec.get("generation_contract") == "skill-direct-v1":
+            en_spec = validate_direct_completion(final_payload)
+            await billing.save_compiled_spec(job_id, en_spec)
 
         # 4. TCC Confirm
         settle_info = await billing.confirm_settle(

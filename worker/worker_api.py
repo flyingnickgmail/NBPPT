@@ -388,6 +388,13 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
     if x_worker_secret != WORKER_SECRET:
         raise HTTPException(status_code=403, detail="Unauthorized worker secret")
 
+    if req.english_spec.get("generation_contract") == "skill-direct-v1":
+        from worker.direct_generation import generate_deck_stream
+        return StreamingResponse(
+            generate_deck_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE),
+            media_type="text/event-stream",
+        )
+
     job_dir = WORKSPACE_JOBS_DIR / req.job_id
     output_dir = job_dir / "output"
     assets_dir = output_dir / "assets"
