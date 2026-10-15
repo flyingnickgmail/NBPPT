@@ -778,13 +778,13 @@
         <button onclick="closeMcpModal()" class="btn-secondary px-2.5 py-1 text-xs cursor-pointer">关闭</button>
       </div>
       <p class="text-xs leading-relaxed" style="color: var(--text-secondary);">
-        将以下配置加入您的客户端即可直接通过对话调用本系统的母版匹配、大纲推理与图形化视频渲染能力：
+        将以下配置加入支持 Streamable HTTP（流式 HTTP 连接）的客户端，即可提交 PPT、查询进度和下载产物。请使用普通生成密钥，不要填写管理员密钥。
       </p>
-      <pre class="studio-inset p-4 text-xs font-mono-code overflow-x-auto" style="color: var(--text-primary);">{
+      <pre id="mcpConnectionConfig" class="studio-inset p-4 text-xs font-mono-code overflow-x-auto" style="color: var(--text-primary);">{
   "mcpServers": {
     "personal-agent-promedia": {
       "type": "streamable-http",
-      "url": "http://127.0.0.1:8000/mcp",
+      "url": "HTTPS_SERVER_ORIGIN/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_PRIVATE_API_KEY"
       }
@@ -795,6 +795,10 @@
   </div>
 
   <script>
+    document.getElementById("mcpConnectionConfig").textContent = JSON.stringify({
+      mcpServers: { nbppt: { type: "streamable-http", url: window.location.origin + "/mcp",
+        headers: { Authorization: "Bearer YOUR_GENERATION_API_KEY" } } }
+    }, null, 2);
     // Credentials stay in an HttpOnly session cookie, never in URLs or storage.
     const nativeFetch = window.fetch.bind(window);
     window.fetch = async (...args) => {
