@@ -24,7 +24,7 @@ nohup "$VENV_DIR/bin/uvicorn" worker.worker_api:app --host 127.0.0.1 --port 8001
 
 echo "=== [3/3] 启动国内门面与商业化 MCP 网关 (Gateway & Web Studio :8000) ==="
 pkill -f "uvicorn gateway.main:app" || true
-nohup "$VENV_DIR/bin/uvicorn" gateway.main:app --host 0.0.0.0 --port 8000 > "$PROJECT_DIR/workspace/logs/gateway.log" 2>&1 &
+nohup "$VENV_DIR/bin/uvicorn" gateway.main:app --host 127.0.0.1 --port 8000 > "$PROJECT_DIR/workspace/logs/gateway.log" 2>&1 &
 
 sleep 2
 echo ""

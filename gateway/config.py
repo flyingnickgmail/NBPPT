@@ -15,12 +15,12 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env"
 load_dotenv(ENV_FILE)
 
-GATEWAY_HOST = os.getenv("GATEWAY_HOST", "0.0.0.0")
+GATEWAY_HOST = os.getenv("GATEWAY_HOST", "127.0.0.1")
 GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8000"))
 
 DATA_DIR = BASE_DIR / "workspace" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-DATABASE_PATH = os.getenv("DATABASE_PATH", str(DATA_DIR / "platform.db"))
+DATABASE_PATH = os.getenv("DATABASE_PATH") or str(DATA_DIR / "platform.db")
 RUNTIME_SETTINGS_FILE = DATA_DIR / "runtime_settings.json"
 
 DEFAULT_DEMO_API_KEY = "sk-mcp-demo-pro-8899"
@@ -124,7 +124,7 @@ def get_runtime_settings() -> Dict[str, Any]:
         "openai_api_key": os.getenv("OPENAI_API_KEY", "").strip(),
         "jimeng_api_key": os.getenv("JIMENG_API_KEY", "").strip(),
         "overseas_worker_url": os.getenv("OVERSEAS_WORKER_URL", "http://127.0.0.1:8001").rstrip("/"),
-        "overseas_worker_secret": os.getenv("OVERSEAS_WORKER_SECRET", "super-secret-mtls-token-2026"),
+        "overseas_worker_secret": os.getenv("OVERSEAS_WORKER_SECRET", ""),
         "account_safe_mode": True,
         "account_safe_proxy": os.getenv("ACCOUNT_SAFE_PROXY", "").strip(),
         "allow_sandbox_fallback": True,
@@ -141,7 +141,7 @@ def get_runtime_settings() -> Dict[str, Any]:
         try:
             saved = json.loads(RUNTIME_SETTINGS_FILE.read_text(encoding="utf-8"))
             for k, v in saved.items():
-                if v is not None and k in defaults and k != "local_cli_status":
+                if v is not None and k in defaults and k not in ("local_cli_status", "overseas_worker_secret"):
                     # Keep auto-discovered cc-switch key if saved key was empty
                     if k in ("anthropic_api_key", "anthropic_base_url", "claude_model") and not v and defaults.get(k):
                         continue

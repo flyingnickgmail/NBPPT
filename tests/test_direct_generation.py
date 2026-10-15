@@ -27,10 +27,10 @@ def plan(count=5):
 
 
 def fixture_output(root, count=5):
-    assets = root / "output/assets"
+    assets = root / "staging/assets"
     assets.mkdir(parents=True)
     for i in range(1, count + 1):
-        Image.new("RGB", (1280, 720), (i * 30, 20, 50)).save(assets / f"slide_preview_{i}.png")
+        Image.new("RGB", (1672, 941), (i * 30, 20, 50)).save(assets / f"slide_preview_{i}.png")
     (root / "deck_plan.json").write_text(json.dumps(plan(count)))
     (root / "review.json").write_text(json.dumps({"reviewed_pages": list(range(1, count+1)), "issues": []}))
     return assets
@@ -82,7 +82,7 @@ def test_bad_artifacts_rejected(tmp_path, mutation):
     if mutation == "symlink":
         first.unlink(); first.symlink_to(assets / "slide_preview_2.png")
     if mutation == "unreviewed": (tmp_path / "review.json").write_text('{"reviewed_pages":[],"issues":[]}')
-    with pytest.raises((ValueError, OSError)): direct.package_deck("test", tmp_path, spec())
+    with pytest.raises((ValueError, OSError)): direct.package_deck("ppt_0000000001", tmp_path, spec())
 
 
 def test_package_reopens_deck_and_orders_previews(tmp_path):
@@ -90,9 +90,9 @@ def test_package_reopens_deck_and_orders_previews(tmp_path):
     source_plan = plan()
     source_plan["task_summary_cn"] = "A & B <script>alert(1)</script>"
     (tmp_path / "deck_plan.json").write_text(json.dumps(source_plan))
-    actual, qa = direct.package_deck("test", tmp_path, spec())
+    actual, qa = direct.package_deck("ppt_0000000001", tmp_path, spec())
     assert actual["task_summary_cn"] == source_plan["task_summary_cn"]
-    html_deck = (tmp_path / "output/test_deck_interactive.html").read_text()
+    html_deck = (tmp_path / "output/ppt_0000000001_deck_interactive.html").read_text()
     assert "<title>A &amp; B &lt;script&gt;" in html_deck
     assert "<script>alert(1)</script>" not in html_deck
     assert actual["slide_count"] == 5 and qa["status"] == "PASSED"
@@ -107,7 +107,7 @@ def test_package_reopens_deck_and_orders_previews(tmp_path):
 
 def test_failed_cli_never_completes_or_falls_back(tmp_path):
     async def run():
-        req = SimpleNamespace(job_id="failed", english_spec=spec(), runtime_keys={})
+        req = SimpleNamespace(job_id="ppt_0000000002", english_spec=spec(), runtime_keys={})
         return [json.loads(e[6:]) async for e in direct.generate_deck_stream(req, tmp_path, "/usr/bin/false", asyncio.Semaphore(1))]
     events = asyncio.run(run())
     assert events[-1]["type"] == "error"
@@ -117,15 +117,15 @@ def test_failed_cli_never_completes_or_falls_back(tmp_path):
 
 def test_empty_successful_cli_does_not_complete(tmp_path):
     async def run():
-        req = SimpleNamespace(job_id="empty", english_spec=spec(), runtime_keys={})
+        req = SimpleNamespace(job_id="ppt_0000000002", english_spec=spec(), runtime_keys={})
         return [json.loads(e[6:]) async for e in direct.generate_deck_stream(req, tmp_path, "/usr/bin/true", asyncio.Semaphore(1))]
     assert asyncio.run(run())[-1]["type"] == "error"
 
 
 def test_existing_job_never_reused(tmp_path):
-    (tmp_path / "existing").mkdir()
+    (tmp_path / "ppt_0000000002").mkdir()
     async def run():
-        req = SimpleNamespace(job_id="existing", english_spec=spec(), runtime_keys={})
+        req = SimpleNamespace(job_id="ppt_0000000002", english_spec=spec(), runtime_keys={})
         return [json.loads(e[6:]) async for e in direct.generate_deck_stream(req, tmp_path, "/usr/bin/true", asyncio.Semaphore(1))]
     assert asyncio.run(run())[-1]["type"] == "error"
 
@@ -162,7 +162,7 @@ def test_gateway_saves_actual_plan_and_only_settles_passed(monkeypatch, worker_s
         def stream(self, *args, **kwargs): return Stream()
     monkeypatch.setattr(main.httpx, "AsyncClient", Client)
     async def run():
-        response = await main.stream_create_job(main.CreateJobRequest(prompt_cn=spec()["original_prompt_cn"], slide_count=5))
+        response = await main.stream_create_job(main.CreateJobRequest(prompt_cn=spec()["original_prompt_cn"], slide_count=5), SimpleNamespace(state=SimpleNamespace(principal={"api_key": "test"})))
         return [json.loads(msg[6:]) async for msg in response.body_iterator]
     events = asyncio.run(run())
     if worker_status == "PASSED":
@@ -180,3 +180,23 @@ def test_gateway_saves_actual_plan_and_only_settles_passed(monkeypatch, worker_s
 def test_empty_completed_report_cannot_settle():
     with pytest.raises(RuntimeError, match="完整交付检查"):
         validate_direct_completion({"compiled_spec": plan(), "qa_report": {"status": "PASSED"}, "cdn_urls": {}})
+
+
+def test_cli_overrides_real_mcp_keys_without_literal_quotes(tmp_path, monkeypatch):
+    home = tmp_path / 'home'
+    (home / '.codex').mkdir(parents=True)
+    (home / '.codex/config.toml').write_text('[mcp_servers.playwright]\ncommand="fake"\n[mcp_servers.codebase-memory-mcp]\ncommand="fake"\n')
+    monkeypatch.setattr(direct.Path, 'home', classmethod(lambda cls: home))
+    captured = []
+    async def launch(*args, **kwargs):
+        captured.extend(args)
+        return SimpleNamespace(returncode=1, wait=None)
+    monkeypatch.setattr(direct.asyncio, 'create_subprocess_exec', launch)
+    # Failure after capture is expected: no real generation is launched.
+    async def scenario():
+        req=SimpleNamespace(job_id='ppt_0000000003', english_spec=spec(), runtime_keys={})
+        return [json.loads(e[6:]) async for e in direct.generate_deck_stream(req, tmp_path/'jobs', '/codex', asyncio.Semaphore(1))]
+    assert asyncio.run(scenario())[-1]['type'] == 'error'
+    assert 'mcp_servers.playwright.enabled=false' in captured
+    assert 'mcp_servers.codebase-memory-mcp.enabled=false' in captured
+    assert not any('mcp_servers."' in arg for arg in captured)

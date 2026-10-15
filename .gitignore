@@ -12,6 +12,7 @@ __pycache__/
 .env.local
 workspace/data/*.db
 workspace/data/*.db-journal
+workspace/data/*.gateway.lock
 workspace/data/*.sqlite*
 workspace/data/runtime_settings.json
 
