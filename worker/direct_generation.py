@@ -155,10 +155,11 @@ def package_deck(job_id, job_dir, spec):
     if len(Presentation(str(pptx)).slides) != len(slides):
         raise ValueError("PPTX 封装页数不匹配")
     from worker.worker_api import _build_fullscreen_image_html_deck
-    actual_spec = {**spec, "task_summary_cn": html.escape(plan.get("task_summary_cn", spec["task_summary_cn"])),
+    actual_spec = {**spec, "task_summary_cn": plan.get("task_summary_cn", spec["task_summary_cn"]),
                    "slide_outline": slides, "slide_count": len(slides),
                    "compiler_engine": "Codex 技能直出（原文规划）", "is_real_llm": True}
-    _build_fullscreen_image_html_deck(actual_spec, images, output / f"{job_id}_deck_interactive.html")
+    html_spec = {**actual_spec, "task_summary_cn": html.escape(actual_spec["task_summary_cn"])}
+    _build_fullscreen_image_html_deck(html_spec, images, output / f"{job_id}_deck_interactive.html")
     qa = {"status": "PASSED", "planned_slides": len(slides), "delivered_slides": len(images),
           "pptx_size_kb": round(pptx.stat().st_size / 1024, 1),
           "pptx_slides_count": len(slides), "slide_resolution": ", ".join(sorted(set(sizes))),

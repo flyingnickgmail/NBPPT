@@ -87,7 +87,14 @@ def test_bad_artifacts_rejected(tmp_path, mutation):
 
 def test_package_reopens_deck_and_orders_previews(tmp_path):
     fixture_output(tmp_path)
+    source_plan = plan()
+    source_plan["task_summary_cn"] = "A & B <script>alert(1)</script>"
+    (tmp_path / "deck_plan.json").write_text(json.dumps(source_plan))
     actual, qa = direct.package_deck("test", tmp_path, spec())
+    assert actual["task_summary_cn"] == source_plan["task_summary_cn"]
+    html_deck = (tmp_path / "output/test_deck_interactive.html").read_text()
+    assert "<title>A &amp; B &lt;script&gt;" in html_deck
+    assert "<script>alert(1)</script>" not in html_deck
     assert actual["slide_count"] == 5 and qa["status"] == "PASSED"
     assert len(qa["layout_families"]) == 5
     urls = upload_job_artifacts_to_cdn("test", tmp_path / "output")
