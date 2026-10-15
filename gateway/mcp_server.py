@@ -1,168 +1,180 @@
-"""
-Standard Commercial MCP Server Definition & JSON-RPC 2.0 Streamable HTTP Handler.
-Exposes:
-  1. `create_pro_presentation` (60 credits pre-freeze)
-  2. `create_jimeng_marketing_video` (80 credits pre-freeze)
-  3. `create_composite_campaign` (120 credits pre-freeze)
-Can be mounted directly at `/mcp` in FastAPI or launched standalone via FastMCP.
-"""
+"""Authenticated MCP transport; generation outlives individual client requests."""
+import asyncio
+import hashlib
 import json
-import uuid
-from typing import Dict, Any, Optional
+import re
+import os
+from urllib.parse import urlparse
+from mcp.server.transport_security import TransportSecuritySettings
+from typing import Annotated
+
 import httpx
+from mcp.server.mcpserver import Context, MCPServer
+from pydantic import Field
 
-from gateway.config import (
-    OVERSEAS_WORKER_URL,
-    OVERSEAS_WORKER_SECRET,
-    DEFAULT_DEMO_API_KEY,
-    TASK_FREEZE_CREDITS,
-)
-from gateway.billing_tcc import BillingManager
+from gateway.config import get_runtime_settings, TASK_FREEZE_CREDITS
 from gateway.deepseek_compiler import compile_cn_request_to_english_spec, validate_direct_completion
-
-MCP_TOOLS_MANIFEST = [
-    {
-        "name": "create_pro_presentation",
-        "description": "[商业级PPT生成与美化] 已集成 GitHub 知名 PPT Skills (GordenSun/GordenPPTSkill 21套真实母版、zarazhangrui/frontend-slides、hugohe3/ppt-master、用友高端BG、ABU9)。输入中文主题或大纲，自动匹配母版并生成非破坏性插槽克隆 .pptx 与交互式网页演示 .html（预冻结 60 算力点）。",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "topic_and_requirements": {"type": "string", "description": "中文 PPT 主题、受众与核心内容要求"},
-                "template_id": {
-                    "type": "string",
-                    "default": "auto",
-                    "description": "可选母版ID：auto、gorden:mckinsey-style、gorden:architecture-deck、gorden:premium-corp、gorden:minimal-business-summary、gorden:data-viz-deck、frontend-slides、ppt-master、yonyou-ci-bg、abu9-exec-report 等",
-                },
-                "slide_count": {"type": "integer", "default": 6, "description": "幻灯片页数 (4-15)"},
-                "visual_style": {
-                    "type": "string",
-                    "default": "executive-dark",
-                },
-            },
-            "required": ["topic_and_requirements"],
-        },
-    },
-    {
-        "name": "create_jimeng_marketing_video",
-        "description": "[即梦AI高清营销视频生成] 输入中文视频创意或产品描述，自动拆解分镜并合成带动态运镜、中文字幕与音轨的 1080P .mp4 视频（预冻结 80 算力点）。",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "video_description_cn": {"type": "string", "description": "中文视频创意、产品卖点或分镜描述"},
-                "duration_seconds": {"type": "integer", "default": 10, "description": "视频时长秒数 (6-30)"},
-                "aspect_ratio": {"type": "string", "default": "16:9", "enum": ["16:9", "9:16"]},
-            },
-            "required": ["video_description_cn"],
-        },
-    },
-    {
-        "name": "create_composite_campaign",
-        "description": "[PPT + 营销视频全案一键生成] 同时生成商业级 .pptx 路演文稿、300DPI 数据图表与 1080P 宣传短视频（预冻结 120 算力点）。",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "campaign_prompt_cn": {"type": "string", "description": "中文全案主题与具体需求描述"},
-                "template_id": {"type": "string", "default": "auto"},
-                "slide_count": {"type": "integer", "default": 6},
-                "duration_seconds": {"type": "integer", "default": 10},
-                "visual_style": {"type": "string", "default": "executive-dark"},
-            },
-            "required": ["campaign_prompt_cn"],
-        },
-    },
-]
+from gateway.delivery import verify_published, delivery_urls, safe_job_id
+from gateway.template_registry import list_available_templates
 
 
-async def execute_mcp_tool_call(
-    billing: BillingManager,
-    api_key: str,
-    tool_name: str,
-    arguments: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Execute an MCP tool call end-to-end with TCC credit freeze, compilation, worker dispatch, and settlement."""
-    key = api_key or DEFAULT_DEMO_API_KEY
-    if tool_name == "create_pro_presentation":
-        task_type = "ppt"
-        cn_prompt = arguments.get("topic_and_requirements", "新一代 AI 产品商业路演")
-        extra_params = {
-            "template_id": arguments.get("template_id", "auto"),
-            "slide_count": int(arguments.get("slide_count", 6)),
-            "visual_style": arguments.get("visual_style", "executive-dark"),
-        }
-    elif tool_name == "create_jimeng_marketing_video":
-        task_type = "video"
-        cn_prompt = arguments.get("video_description_cn", "科技感新品发布宣传片")
-        extra_params = {
-            "duration_seconds": int(arguments.get("duration_seconds", 10)),
-            "aspect_ratio": arguments.get("aspect_ratio", "16:9"),
-        }
-    elif tool_name == "create_composite_campaign":
-        task_type = "composite"
-        cn_prompt = arguments.get("campaign_prompt_cn", "智能硬件全球众筹路演全案")
-        extra_params = {
-            "slide_count": int(arguments.get("slide_count", 6)),
-            "duration_seconds": int(arguments.get("duration_seconds", 10)),
-            "visual_style": arguments.get("visual_style", "executive-dark"),
-        }
-    else:
-        raise ValueError(f"Unknown MCP tool: {tool_name}")
+class PresentationJobs:
+    """One gateway process owns admission, running tasks and restart recovery."""
+    def __init__(self, billing):
+        self.billing = billing
+        self.tasks = set()
+        self.progress = {}
+        self.admission_lock = asyncio.Lock()
 
-    freeze_amount = TASK_FREEZE_CREDITS[task_type]
-    job_id = f"{task_type}_{uuid.uuid4().hex[:10]}"
+    def track(self, coro):
+        task = asyncio.create_task(coro)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        return task
 
-    # 1. TCC Try
-    await billing.try_freeze_credits(key, job_id, task_type, cn_prompt, freeze_amount)
+    async def close(self):
+        while self.tasks:
+            tasks = list(self.tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    try:
-        # 2. Bilingual Task Spec Compilation
-        en_spec = await compile_cn_request_to_english_spec(cn_prompt, task_type, extra_params)
-        await billing.save_compiled_spec(job_id, en_spec)
+    async def create(self, principal, source, template_id, slide_count, request_id):
+        if not source.strip() or len(source) > 100000 or not 0 <= slide_count <= 60:
+            raise ValueError("原文不能为空且最多10万字；页数须为0（自动）或1–60")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
+            raise ValueError("request_id须为8–80位字母、数字、下划线或短横线；重试必须复用")
+        if template_id != "auto" and template_id not in {t['id'] for t in list_available_templates()}:
+            raise ValueError("未知模板，请先调用list_templates")
+        arguments = {"source": source, "template_id": template_id, "slide_count": slide_count}
+        fingerprint = hashlib.sha256(json.dumps(arguments, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        job_id = "ppt_" + hashlib.sha256((principal['user_id'] + ':' + request_id).encode()).hexdigest()[:10]
 
-        # 3. Call Overseas / Local Worker Stream
-        final_payload: Optional[Dict[str, Any]] = None
-        async with httpx.AsyncClient(timeout=600.0, trust_env=False) as client:
-            async with client.stream(
-                "POST",
-                f"{OVERSEAS_WORKER_URL}/internal/execute-stream",
-                headers={"X-Worker-Secret": OVERSEAS_WORKER_SECRET},
-                json={
-                    "job_id": job_id,
-                    "task_type": task_type,
-                    "max_budget_usd": 0.85,
-                    "execution_mode": "auto",
-                    "english_spec": en_spec,
-                },
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    evt = json.loads(line[6:])
-                    if evt.get("type") == "completed":
-                        final_payload = evt
-                    elif evt.get("type") == "error":
-                        raise RuntimeError(evt.get("message", "Worker error"))
+        async def admit():
+            async with self.admission_lock:
+                existing = await self.billing.get_job(job_id, principal['user_id'])
+                if existing:
+                    if existing.get('request_hash') != fingerprint:
+                        raise ValueError("request_id已用于不同内容，请为新任务选择新编号")
+                    return await self.status(principal, job_id)
+                await self.billing.try_freeze_credits(principal['api_key'], job_id, 'ppt', source,
+                                                     TASK_FREEZE_CREDITS['ppt'], request_hash=fingerprint)
+                self.progress[job_id] = {"percent": 0, "message": "已接收，等待生成"}
+                self.track(self.execute(job_id, arguments))
+                return {"job_id": job_id, "status": "RUNNING", "poll_after_seconds": 30,
+                        "message": "任务已提交，使用get_job_status查询；不要重复创建任务。"}
+        # A closed MCP request cannot abandon a committed reservation.
+        return await asyncio.shield(self.track(admit()))
 
-        if not final_payload:
-            raise RuntimeError("海外/本地算力底座未返回完成结果")
+    async def execute(self, job_id, arguments):
+        try:
+            runtime = get_runtime_settings()
+            spec = await compile_cn_request_to_english_spec(arguments['source'], 'ppt',
+                {"slide_count": arguments['slide_count'], "template_id": arguments['template_id'], "execution_mode": "codex_cli"})
+            spec['requested_slide_count'] = arguments['slide_count']
+            await self.billing.save_compiled_spec(job_id, spec)
+            completed = None
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=False) as client:
+                async with client.stream('POST', runtime['overseas_worker_url'] + '/internal/execute-stream',
+                    headers={'X-Worker-Secret': runtime['overseas_worker_secret']},
+                    json={'job_id': job_id, 'task_type': 'ppt', 'english_spec': spec,
+                          'execution_mode': 'codex_cli', 'max_budget_usd': .85,
+                          'runtime_keys': {'account_safe_proxy': runtime.get('account_safe_proxy', '')}}) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.startswith('data: '):
+                            continue
+                        event = json.loads(line[6:])
+                        if event.get('type') == 'error':
+                            raise RuntimeError(event.get('message', 'Worker failed'))
+                        if event.get('type') == 'progress':
+                            self.progress[job_id] = {'percent': min(99, event.get('pct', 0)),
+                                                     'message': event.get('message_cn', '')}
+                        if event.get('type') == 'completed':
+                            if completed is not None:
+                                raise ValueError('Worker returned more than one completion')
+                            completed = event
+            if completed is None:
+                raise ValueError('Worker returned no completed delivery')
+            actual_spec = validate_direct_completion(completed)
+            actual_spec['requested_slide_count'] = arguments['slide_count']
+            await self.billing.save_compiled_spec(job_id, actual_spec)
+            await self.billing.confirm_settle(job_id, float(completed['total_cost_usd']), completed.get('cdn_urls', {}))
+        except asyncio.CancelledError:
+            await asyncio.shield(self.billing.cancel_refund(job_id, 'Gateway stopped during generation'))
+            raise
+        except Exception as exc:
+            await self.billing.cancel_refund(job_id, str(exc))
+        finally:
+            self.progress.pop(job_id, None)
 
-        if en_spec.get("generation_contract") == "skill-direct-v1":
-            en_spec = validate_direct_completion(final_payload)
-            await billing.save_compiled_spec(job_id, en_spec)
+    async def owned_job(self, principal, job_id):
+        safe_job_id(job_id)
+        job = await self.billing.get_job(job_id, principal['user_id'])
+        if not job:
+            raise ValueError('任务不存在或无权访问')
+        return job
 
-        # 4. TCC Confirm
-        settle_info = await billing.confirm_settle(
-            job_id, float(final_payload.get("total_cost_usd", 0.12)), final_payload.get("cdn_urls", {})
-        )
+    async def status(self, principal, job_id):
+        job = await self.owned_job(principal, job_id)
+        result = {'job_id': job_id, 'status': job['status'], 'credits_charged': job['credits_charged']}
+        if job['status'] == 'RUNNING':
+            result.update(self.progress.get(job_id, {}))
+            result['poll_after_seconds'] = 30
+        elif job['status'] == 'FAILED':
+            result['message'] = '生成或文件验收失败，冻结算力已退回。请联系管理员查看详细日志。'
+        elif job['status'] == 'COMPLETED':
+            result['percent'] = 100
+            result['message'] = '文件检查通过；内容和图片文字仍需人工复核。调用get_job_artifacts获取产物。'
+        return result
 
-        return {
-            "job_id": job_id,
-            "task_type": task_type,
-            "status": "completed",
-            "summary_cn": en_spec.get("task_summary_cn"),
-            "deliverables": final_payload.get("cdn_urls", {}),
-            "billing_settlement": settle_info,
-        }
-    except Exception as exc:
-        await billing.cancel_refund(job_id, str(exc))
-        raise RuntimeError(f"任务中断，预冻结的 {freeze_amount} 算力点已全额退回。原因: {exc}")
+    async def artifacts(self, principal, job_id):
+        job = await self.owned_job(principal, job_id)
+        if job['status'] != 'COMPLETED':
+            raise ValueError('任务尚未成功完成，没有可交付产物')
+        manifest = await asyncio.to_thread(verify_published, job_id, 'ppt',
+            json.loads(job['en_compiled_spec']), self.billing.jobs_root / job_id / 'output')
+        return {'job_id': job_id, 'file_status': 'PASSED', 'content_status': 'NOT_REVIEWED',
+                'slide_count': manifest['planned_slides'], 'artifacts': delivery_urls(job_id, manifest),
+                'files': manifest['files'], 'download_auth': 'Use the same Bearer credential as MCP; do not put it in URLs.'}
+
+
+def build_mcp(jobs):
+    server = MCPServer('NBPPT', version='2.0.0', instructions=(
+        '先选择模板，再用完整原文创建PPT。模板只约束品牌风格，各页按内容选择布局。'
+        '创建后每30秒查询一次进度，成功后获取产物。不得把任务已提交说成已生成。'
+        'request_id用于幂等重试，重试同一请求必须复用。文件验收不等同于内容事实核查。'))
+
+    def principal(ctx):
+        return ctx.request_context.request.state.principal
+
+    @server.tool()
+    async def list_templates() -> dict:
+        """列出可用品牌风格参考；不要求每页使用相同版式。"""
+        return {'templates': [{k: t.get(k) for k in ('id', 'name', 'description', 'badge')}
+                              for t in list_available_templates()]}
+
+    @server.tool()
+    async def create_presentation(ctx: Context,
+        source: Annotated[str, Field(min_length=1, max_length=100000)],
+        request_id: Annotated[str, Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')],
+        template_id: str = 'auto', slide_count: Annotated[int, Field(ge=0, le=60)] = 0) -> dict:
+        """提交完整原文生成PPT，立即返回job_id。0页表示由内容决定。消耗平台算力点。"""
+        return await jobs.create(principal(ctx), source, template_id, slide_count, request_id)
+
+    @server.tool()
+    async def get_job_status(ctx: Context, job_id: str) -> dict:
+        """查询自己任务的进度和结算状态；RUNNING时30秒后再查。"""
+        return await jobs.status(principal(ctx), job_id)
+
+    @server.tool()
+    async def get_job_artifacts(ctx: Context, job_id: str) -> dict:
+        """完成后再次验证文件摘要，返回PPTX、HTML和逐页PNG的下载路径及摘要。"""
+        return await jobs.artifacts(principal(ctx), job_id)
+
+    origin = os.getenv('NBPPT_PUBLIC_ORIGIN', 'http://127.0.0.1:8000')
+    parsed = urlparse(origin)
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=True,
+        allowed_hosts=['127.0.0.1:*', 'localhost:*', '[::1]:*', parsed.netloc],
+        allowed_origins=[origin])
+    return server.streamable_http_app(json_response=True, stateless_http=True, transport_security=security)

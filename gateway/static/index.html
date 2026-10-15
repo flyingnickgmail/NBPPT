@@ -269,6 +269,7 @@
         </button>
 
         <!-- Theme Switcher Button (Light / Dark) -->
+        <button onclick="logoutSession()" class="btn-secondary px-2.5 py-1.5 text-xs">退出登录</button>
         <button id="themeToggleBtn" onclick="toggleColorScheme()" aria-label="切换浅色或深色主题"
           class="btn-secondary px-2.5 py-1.5 text-xs font-medium flex items-center gap-1.5 cursor-pointer">
           <!-- Sun Icon (shown in dark mode) -->
@@ -514,7 +515,7 @@
         <!-- Submit Action Button -->
         <button id="submitBtn" onclick="startMasterAgentTask()"
           class="btn-primary-ink w-full py-3 px-4 font-medium text-sm flex items-center justify-center gap-2 cursor-pointer">
-          <span>① 规划详细内容 → ② 交由 Codex/Claude 生成 → ③ 主 Agent 验收</span>
+          <span>① 规划详细内容 → ② 交由 Codex/Claude 生成 → ③ 文件检查</span>
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
           </svg>
@@ -540,7 +541,7 @@
         </div>
 
         <div id="sseLogs" class="studio-inset p-3 h-24 overflow-y-auto font-mono-code text-xs space-y-1" style="color: var(--text-secondary);">
-          <div>[就绪] ① Claude 编写详细PPT脚本与提示词 → ② 直接发给 Codex (image_gen 纯图片PPT) 或 Claude 执行 → ③ 主 Agent 验收交差</div>
+          <div>[就绪] ① 编写脚本与提示词 → ② Codex 或 Claude 执行 → ③ 文件检查；内容仍需复核</div>
         </div>
       </div>
 
@@ -585,7 +586,7 @@
       <div id="qaReportCard" class="hidden studio-card p-4 border-l-4" style="border-left-color: var(--status-ok-text);">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-1.5">
           <div class="flex items-center gap-2">
-            <span class="badge-ok text-[11px] font-mono-code px-2 py-0.5 rounded font-semibold">STAGE 3 · 主 Agent 终审验收报告</span>
+            <span class="badge-ok text-[11px] font-mono-code px-2 py-0.5 rounded font-semibold">阶段三 · 文件检查报告（内容未审核）</span>
             <span id="qaVerdictTitle" class="text-xs font-semibold" style="color: var(--text-primary);">验收通过</span>
           </div>
           <span id="qaMetaStats" class="text-[11px] font-mono-code" style="color: var(--text-muted);"></span>
@@ -777,15 +778,15 @@
         <button onclick="closeMcpModal()" class="btn-secondary px-2.5 py-1 text-xs cursor-pointer">关闭</button>
       </div>
       <p class="text-xs leading-relaxed" style="color: var(--text-secondary);">
-        将以下配置加入您的客户端即可直接通过对话调用本系统的母版匹配、大纲推理与图形化视频渲染能力：
+        将以下配置加入支持 Streamable HTTP（流式 HTTP 连接）的客户端，即可提交 PPT、查询进度和下载产物。请使用普通生成密钥，不要填写管理员密钥。
       </p>
-      <pre class="studio-inset p-4 text-xs font-mono-code overflow-x-auto" style="color: var(--text-primary);">{
+      <pre id="mcpConnectionConfig" class="studio-inset p-4 text-xs font-mono-code overflow-x-auto" style="color: var(--text-primary);">{
   "mcpServers": {
     "personal-agent-promedia": {
       "type": "streamable-http",
-      "url": "http://127.0.0.1:8000/mcp",
+      "url": "HTTPS_SERVER_ORIGIN/mcp",
       "headers": {
-        "Authorization": "Bearer sk-mcp-demo-pro-8899"
+        "Authorization": "Bearer YOUR_PRIVATE_API_KEY"
       }
     }
   }
@@ -794,7 +795,47 @@
   </div>
 
   <script>
-    const API_KEY = "sk-mcp-demo-pro-8899";
+    document.getElementById("mcpConnectionConfig").textContent = JSON.stringify({
+      mcpServers: { nbppt: { type: "streamable-http", url: window.location.origin + "/mcp",
+        headers: { Authorization: "Bearer YOUR_GENERATION_API_KEY" } } }
+    }, null, 2);
+    // Credentials stay in an HttpOnly session cookie, never in URLs or storage.
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await nativeFetch(...args);
+      if (response.status === 401) showLogin();
+      if (response.status === 403) throw new Error("需要管理员权限或会话来源校验失败");
+      return response;
+    };
+
+    function showLogin() {
+      if (document.getElementById("loginPanel")) return;
+      const panel = document.createElement("div");
+      panel.id = "loginPanel";
+      panel.style.cssText = "position:fixed;inset:0;z-index:9999;background:#111e;display:grid;place-items:center";
+      panel.innerHTML = '<form style="background:white;color:#111;padding:32px;border-radius:12px;min-width:300px"><h2>登录 NBPPT</h2><p>输入管理员提供的访问密钥</p><input type="password" autocomplete="current-password" required aria-label="访问密钥" style="border:1px solid #999;padding:8px;width:100%"><button type="submit" style="margin-top:16px">登录</button><p role="alert"></p></form>';
+      panel.querySelector("form").onsubmit = async event => {
+        event.preventDefault();
+        const input = panel.querySelector("input");
+        const response = await nativeFetch("/api/session", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({api_key:input.value})});
+        input.value = "";
+        if (response.ok) { panel.remove(); await refreshHealthAndWallet(); }
+        else panel.querySelector('[role="alert"]').textContent = "登录失败，请检查访问密钥或 HTTPS 配置。";
+      };
+      document.body.appendChild(panel);
+    }
+
+    async function logoutSession() {
+      const response = await fetch("/api/session", {method:"DELETE"});
+      if (response.ok) location.reload();
+    }
+
+    function escapedData(value) {
+      if (typeof value === "string") return value.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      if (Array.isArray(value)) return value.map(escapedData);
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k,v]) => [k,escapedData(v)]));
+      return value;
+    }
     let currentTaskType = "ppt";
     let currentTemplateId = "auto";
 
@@ -915,11 +956,14 @@
     async function refreshHealthAndWallet() {
       try {
         const [hResp, wResp] = await Promise.all([
-          fetch("/health"),
-          fetch(`/api/wallet?api_key=${API_KEY}`)
+          fetch("/api/session"),
+          fetch("/api/wallet")
         ]);
         if (hResp.ok) {
-          const h = await hResp.json();
+          const session = await hResp.json();
+          document.querySelectorAll('[onclick="openModelSettingsModal()"], [onclick="openTopupModal()"]').forEach(el => { el.hidden = !session.admin; });
+          const detail = session.admin ? await fetch("/api/health/details") : null;
+          const h = detail && detail.ok ? await detail.json() : {};
           const cli = h.local_cli_status || {};
           const mc = h.models_configured || {};
           const engineBadge = document.getElementById("badgeMasterEngine");
@@ -941,8 +985,8 @@
         }
         if (wResp.ok) {
           const w = await wResp.json();
-          document.getElementById("walletBalance").textContent = w.balance;
-          document.getElementById("walletFrozen").textContent = w.frozen;
+          document.getElementById("walletBalance").textContent = w.user.credits_available;
+          document.getElementById("walletFrozen").textContent = w.user.credits_frozen;
         }
       } catch (e) {
         console.error(e);
@@ -1008,12 +1052,13 @@
     }
 
     function renderQaReport(qa) {
+      qa = escapedData(qa);
       const card = document.getElementById("qaReportCard");
       if (!card || !qa) return;
       card.classList.remove("hidden");
       const actualCnt = qa.delivered_slides ?? qa.actual_slides ?? 0;
       const plannedCnt = qa.planned_slides ?? qa.expected_slides ?? actualCnt;
-      document.getElementById("qaVerdictTitle").textContent = qa.verdict_cn || "验收完成";
+      document.getElementById("qaVerdictTitle").textContent = qa.verdict_cn || "文件检查完成；内容未审核";
       document.getElementById("qaMetaStats").textContent = `${actualCnt}/${plannedCnt} 页 · PPTX ${qa.pptx_size_kb || 0} KB`;
       const checksList = document.getElementById("qaChecksList");
       const rawChecks = qa.checks_cn || qa.checks || [];
@@ -1033,6 +1078,8 @@
     }
 
     function renderDeliverables(cdnUrls) {
+      const safeUrl = u => typeof u === "string" && /^\/artifacts\/(ppt|video|composite)_[a-f0-9]{10}\/[a-zA-Z0-9_./-]+$/.test(u) && !u.includes("..") ? u : null;
+      cdnUrls = Object.fromEntries(Object.entries(cdnUrls).map(([k,v]) => [k, Array.isArray(v) ? v.map(safeUrl).filter(Boolean) : safeUrl(v)]));
       const pptBtn = document.getElementById("pptxDownloadBtn");
       const htmlBtn = document.getElementById("htmlDeckBtn");
       const mp4Btn = document.getElementById("mp4DownloadBtn");
@@ -1099,7 +1146,7 @@
       if (qaCard) qaCard.classList.add("hidden");
 
       appendLog(
-        `启动三阶段流水线 · 阶段1(策划:${masterEngine}) -> 阶段2(执行:${executionMode}) -> 阶段3(主Agent终审)`,
+        `启动三阶段流水线 · 阶段1(策划:${masterEngine}) -> 阶段2(执行:${executionMode}) -> 阶段3(文件检查)`,
         true
       );
 
@@ -1115,7 +1162,6 @@
             duration_seconds: durationSec,
             master_reasoning_engine: masterEngine,
             execution_mode: executionMode,
-            api_key: API_KEY
           })
         });
 
@@ -1229,7 +1275,7 @@
       await fetch("/api/wallet/topup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: API_KEY, amount, channel: "微信支付 Native" })
+        body: JSON.stringify({ amount, channel: "管理员人工加款" })
       });
       closeTopupModal();
       await refreshHealthAndWallet();

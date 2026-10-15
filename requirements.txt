@@ -8,4 +8,4 @@ Pillow>=11.0.0
 matplotlib>=3.9.2
 numpy>=2.1.0
 python-dotenv>=1.0.1
-fastmcp>=2.0.0; python_version >= "3.10"
+mcp==2.3.0

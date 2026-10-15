@@ -318,9 +318,9 @@ def _build_codex_direct_prompt(spec: Dict[str, Any]) -> str:
 
     return (
         f"You are executing a non-interactive pure-image PPT generation job.\n"
-        f"Do NOT ask any clarifying questions. Do NOT run any shell/bash commands or inspect directories.\n"
+        f"Do NOT ask any clarifying questions. Use shell commands only to copy the images generated for THIS job.\n"
         f"Your ONLY task is to call your built-in `image_gen` tool once for each of the {total} slides below (in order from SLIDE 1 to SLIDE {total}) to render high-resolution 16:9 consulting slide images.\n"
-        f"As soon as all {total} slide images have been generated via `image_gen`, immediately reply with `CODEX_IMAGES_DONE`.\n\n"
+        f"Copy each generated image to ./staging/assets/slide_preview_N.png (N starts at 1). Never collect images from other jobs. After all copies are complete, reply with `CODEX_IMAGES_DONE`.\n\n"
         + "\n\n".join(per_slide_blocks)
     )
 
@@ -383,6 +383,8 @@ def _build_local_structured_spec(cn_prompt: str, task_type: str, extra_params: D
 async def _reason_with_codex_cli(codex_bin: str, user_payload: str, proxy_url: str = "") -> Optional[Dict[str, Any]]:
     """Invoke the user's logged-in Codex CLI (`codex exec --ignore-user-config`) for fast outline planning."""
     env = os.environ.copy()
+    for private_name in ("NBPPT_ADMIN_API_KEY", "OVERSEAS_WORKER_SECRET"):
+        env.pop(private_name, None)
     if proxy_url:
         env["HTTP_PROXY"] = proxy_url
         env["HTTPS_PROXY"] = proxy_url

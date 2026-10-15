@@ -2,7 +2,6 @@
 import asyncio
 from collections import Counter
 import hashlib
-import html
 import json
 import os
 from pathlib import Path
@@ -15,7 +14,8 @@ from PIL import Image
 from pptx import Presentation
 from pptx.util import Inches
 
-from worker.oss_uploader import upload_job_artifacts_to_cdn
+from gateway.delivery import inspect_delivery, delivery_urls, safe_job_id
+from worker.isolation import isolated_command
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED_SKILL = ROOT / "worker" / "skills" / "source-image-deck" / "SKILL.md"
@@ -75,8 +75,8 @@ Write deck_plan.json BEFORE images, with this schema:
 For 5+ pages use at least three suitable layout families, without identical layouts on 3 consecutive pages.
 Source quotes must be literal excerpts, not invented references or a paraphrase.
 Then use the built-in image_gen tool ONCE PER PAGE (regenerate to repair errors).
-Generate 16:9 Chinese slides, preferably 1672×941 or higher. Inspect each generated image.
-Copy the EXACT path returned by each image_gen call to output/assets/slide_preview_1.png,
+Generate 16:9 Chinese slides, exactly 1672×941 pixels (required for delivery). Inspect each generated image.
+Copy the EXACT path returned by each image_gen call to staging/assets/slide_preview_1.png,
 slide_preview_2.png, etc. Do NOT scan global generated_images by timestamp or copy 'latest N'.
 Do not substitute Python/PIL/HTML/SVG/template screenshots for image generation.
 You may use shell/Python to read files and copy images. Do not assemble PPTX; the worker packages it.
@@ -126,7 +126,7 @@ def validate_images(assets, count):
             raise ValueError("图片必须是任务内的普通文件")
         with Image.open(path) as image:
             image.load()
-            if image.format != "PNG" or image.width < 1280 or image.height < 720 or abs(image.width / image.height - 16 / 9) > 0.025:
+            if image.format != "PNG" or image.size != (1672, 941):
                 raise ValueError(f"图片尺寸或格式错误：{path.name}")
             pixels = image.convert("RGB").tobytes()
             fingerprint = hashlib.sha256(pixels).hexdigest()
@@ -143,7 +143,7 @@ def package_deck(job_id, job_dir, spec):
     review = json.loads((job_dir / "review.json").read_text())
     if review.get("reviewed_pages") != list(range(1, len(slides) + 1)) or review.get("issues") != []:
         raise ValueError("生成代理未完成逐页自检或仍有问题")
-    output = job_dir / "output"
+    output = job_dir / "staging"
     images, sizes = validate_images(output / "assets", len(slides))
     deck = Presentation()
     deck.slide_width, deck.slide_height = Inches(16), Inches(9)
@@ -158,8 +158,7 @@ def package_deck(job_id, job_dir, spec):
     actual_spec = {**spec, "task_summary_cn": plan.get("task_summary_cn", spec["task_summary_cn"]),
                    "slide_outline": slides, "slide_count": len(slides),
                    "compiler_engine": "Codex 技能直出（原文规划）", "is_real_llm": True}
-    html_spec = {**actual_spec, "task_summary_cn": html.escape(actual_spec["task_summary_cn"])}
-    _build_fullscreen_image_html_deck(html_spec, images, output / f"{job_id}_deck_interactive.html")
+    _build_fullscreen_image_html_deck(actual_spec, images, output / f"{job_id}_deck_interactive.html")
     qa = {"status": "PASSED", "planned_slides": len(slides), "delivered_slides": len(images),
           "pptx_size_kb": round(pptx.stat().st_size / 1024, 1),
           "pptx_slides_count": len(slides), "slide_resolution": ", ".join(sorted(set(sizes))),
@@ -167,6 +166,9 @@ def package_deck(job_id, job_dir, spec):
           "checks_cn": ["标题与论点无循环、原文引文存在", "图片数量、解码、宽屏尺寸及重复像素检查通过", "PPTX 已重新打开并核对页数", "生成代理已提交逐页自检；不等同于独立事实或文字识别审计"],
           "verdict_cn": "文件检查通过，内容已由生成代理自检；图片中文仍需人工复核"}
     (output / "qa_report.json").write_text(json.dumps(qa, ensure_ascii=False, indent=2))
+    manifest = inspect_delivery(job_id, "ppt", actual_spec, output)
+    (output / "delivery.json").write_text(json.dumps(manifest, ensure_ascii=False))
+    output.rename(job_dir / "output")
     return actual_spec, qa
 
 
@@ -185,13 +187,12 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore):
     proc = None
     acquired = False
     try:
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", req.job_id):
-            raise ValueError("Invalid job ID")
+        safe_job_id(req.job_id)
         spec = req.english_spec
         job_dir = jobs_root / req.job_id
         # A retry must not accidentally reuse a previous run's deck or images.
         job_dir.mkdir(parents=True, exist_ok=False)
-        (job_dir / "output/assets").mkdir(parents=True)
+        (job_dir / "staging/assets").mkdir(parents=True)
         (job_dir / "source.md").write_text(spec["original_prompt_cn"], encoding="utf-8")
         (job_dir / "template.json").write_text(json.dumps(spec.get("matched_template", {}), ensure_ascii=False), encoding="utf-8")
         prompt = build_prompt(spec)
@@ -205,15 +206,20 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore):
                 yield event("progress", pct=28, message_cn="正在等待账号执行队列，原文与任务保持不变。")
         try:
             env = os.environ.copy()
+            for private_name in ("NBPPT_ADMIN_API_KEY", "OVERSEAS_WORKER_SECRET"):
+                env.pop(private_name, None)
             proxy = (req.runtime_keys or {}).get("account_safe_proxy")
             if proxy:
                 env.update({k: proxy for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")})
             cmd = [codex_bin, "exec", "-m", "gpt-6-astra", "-c", 'model_reasoning_effort="high"']
             config = Path.home() / ".codex/config.toml"
-            if config.is_file():
+            if config.is_file() and os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() != "true":
                 for name in tomllib.loads(config.read_text()).get("mcp_servers", {}):
-                    cmd += ["-c", f"mcp_servers.{json.dumps(name)}.enabled=false"]
+                    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+                        raise ValueError("MCP 配置名称包含不支持的字符，请为执行节点使用独立配置")
+                    cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
             cmd += ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt]
+            cmd, _ = isolated_command(cmd, job_dir, skill_references(spec.get("matched_template", {})))
             timeout = max(1800, (spec["slide_count"] or 15) * 180)
             started = time.monotonic()
             with (job_dir / "codex_exec.log").open("wb") as log:
@@ -227,7 +233,7 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore):
                         elapsed = int(time.monotonic() - started)
                         if elapsed > timeout:
                             raise TimeoutError("Codex 生成超时，未使用模板兜底")
-                        count = len(list((job_dir / "output/assets").glob("slide_preview_*.png")))
+                        count = len(list((job_dir / "staging/assets").glob("slide_preview_*.png")))
                         yield event("progress", pct=min(85, 35 + count * 3), message_cn=f"Codex 正在规划、绘制和自检；任务内已有 {count} 页图片，耗时 {elapsed} 秒。")
             if proc.returncode != 0:
                 raise RuntimeError(f"Codex 执行失败（退出码 {proc.returncode}），未使用模板兜底")
@@ -239,7 +245,7 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore):
         yield event("completed", pct=100, total_cost_usd=round(0.08 * actual_spec["slide_count"], 4),
                     cost_is_estimate=True, used_real_claude_cli=False, used_real_codex_cli=True,
                     compiled_spec=actual_spec, qa_report=qa,
-                    cdn_urls=upload_job_artifacts_to_cdn(req.job_id, job_dir / "output"))
+                    cdn_urls=delivery_urls(req.job_id, json.loads((job_dir / "output/delivery.json").read_text())))
     except Exception as exc:
         yield event("error", message=str(exc))
     finally:

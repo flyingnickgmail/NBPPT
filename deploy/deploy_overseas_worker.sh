@@ -8,10 +8,12 @@
 #      + Human Jitter + Persistent Non-Root User Device Fingerprint)
 # ==============================================================================
 set -euo pipefail
+echo "Legacy installer disabled: use deploy/production/README.md for isolated production deployment." >&2
+exit 1
 
 APP_DIR="/opt/personal-agent-worker"
 WORKER_PORT="${WORKER_PORT:-8001}"
-WORKER_SECRET="${OVERSEAS_WORKER_SECRET:-super-secret-mtls-token-2026}"
+WORKER_SECRET="${OVERSEAS_WORKER_SECRET:?Set a random secret of at least 32 characters}"
 ACCOUNT_SAFE_PROXY="${ACCOUNT_SAFE_PROXY:-}"
 
 echo "[1/6] Installing system dependencies (Python3, Node.js 20, FFmpeg, CJK Fonts)..."
@@ -59,7 +61,7 @@ Environment="CLAUDE_BIN=/usr/bin/claude"
 Environment="CODEX_BIN=/usr/bin/codex"
 Environment="FFMPEG_BIN=/usr/bin/ffmpeg"
 Environment="ACCOUNT_SAFE_PROXY=${ACCOUNT_SAFE_PROXY}"
-ExecStart=${APP_DIR}/.venv/bin/uvicorn worker.worker_api:app --host 0.0.0.0 --port ${WORKER_PORT} --workers 1
+ExecStart=${APP_DIR}/.venv/bin/uvicorn worker.worker_api:app --host 127.0.0.1 --port ${WORKER_PORT} --workers 1
 Restart=always
 RestartSec=3
 

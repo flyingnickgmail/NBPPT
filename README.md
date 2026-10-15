@@ -20,8 +20,13 @@ Codex，同一上下文中读取技能、编排内容、逐页调用 `image_gen`
 - 当前算力结算沿用按页估算，不是订阅账号的实际账单。
 
 执行环境：Python 3.11+，已登录并支持内置图片工具的 Codex CLI。
-回归测试：`python -m pytest -q tests/test_direct_generation.py`。
+回归测试：`python -m pytest -q tests/test_direct_generation.py tests/test_security_delivery.py tests/test_mcp_async.py`。
+MCP 接入与客户端配置见 [异步 MCP 使用说明](docs/MCP.md)。
 下文三阶段规划说明适用于旧的 Claude / 视频路径，不能作为新默认链路的验收证据。
+
+> 当前本地安全修复：启动前必须配置私有管理员密钥和执行节点密钥；默认演示密钥已停用。
+> 交付完成表示严格文件检查通过，**不表示内容终审通过**。历史产物需独立复核后迁移。
+> 配置、运行边界与离线测试见 [本地权限与交付说明](docs/LOCAL_SECURITY_DELIVERY.md)。下述旧版能力介绍中的“防封号”和内容终审承诺不构成保证。
 
 **NBPPT** 是一套面向管理咨询、架构汇报与政企方案场景的 **三阶段多智能体 PPT 直出系统**（同时支持 Web 工作台与 MCP Server 接入）。它摒弃了传统机械替换模板占位符的做法，通过 **「Claude / Codex 深度内容策划与提示词工程 $\rightarrow$ Codex (`image_gen`) 纯图片 PPT 或 Claude 技能直出 $\rightarrow$ 主 Agent 终审验收封装」** 的三阶段闭环，直接生成 `1672×941` (16:9) 咨询级高清幻灯片与 `.pptx` 源文件。
 
@@ -52,7 +57,7 @@ NBPPT/
 │   ├── deepseek_compiler.py  # 阶段 1：Claude / Codex 详细 PPT 内容规划与 Prompt 编译器
 │   ├── template_registry.py  # 智能母版路由与开源 PPT 技能注册中心
 │   ├── billing_tcc.py        # TCC 预授权算力计费与多租户钱包
-│   ├── mcp_server.py         # 标准 FastMCP Server（供 Claude Desktop / Cursor / Codex 挂载）
+│   ├── mcp_server.py         # 官方 MCP SDK 异步任务接口（供 Claude Desktop / Cursor / Codex 挂载）
 │   └── static/index.html     # Web Studio 双主题（深色黑曜石 / 浅色高定纸感）工作台
 ├── worker/                   # 执行节点 (:8001)
 │   ├── worker_api.py         # 阶段 2（Codex/Claude 直出执行）与阶段 3（主 Agent 终审验收）

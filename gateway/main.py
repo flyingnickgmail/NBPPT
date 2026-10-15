@@ -8,13 +8,18 @@ Supports:
 import json
 import pathlib
 import uuid
+import asyncio
+import os
+import hashlib
+import fcntl
+from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from gateway.config import (
     BASE_DIR,
@@ -26,52 +31,118 @@ from gateway.config import (
 )
 from gateway.billing_tcc import BillingManager
 from gateway.deepseek_compiler import compile_cn_request_to_english_spec, validate_direct_completion, VISUAL_PALETTES
+
+from gateway.auth import COOKIE, authenticate_request, check_origin, create_session, delete_session, secure_cookie
+from gateway.delivery import safe_job_id, contained_file
 from gateway.template_registry import (
     GORDEN_ROOT,
     list_available_templates,
     list_installed_ppt_skills,
     match_template_for_prompt,
 )
-from gateway.mcp_server import MCP_TOOLS_MANIFEST, execute_mcp_tool_call
+from gateway.mcp_server import PresentationJobs, build_mcp
+
+@asynccontextmanager
+async def lifespan(app):
+    # Recovery assumes one gateway owns the SQLite database. Enforce that contract.
+    with open(str(billing.db_path) + ".gateway.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        await billing.initialize()
+        await billing.recover_interrupted()
+        async with mcp_app.router.lifespan_context(mcp_app):
+            try:
+                yield
+            finally:
+                await mcp_jobs.close()
+
 
 app = FastAPI(
     title="Personal Agent ProMedia — Master Agent Gateway & MCP Server",
     version="1.3.0",
+    docs_url=None, redoc_url=None, openapi_url=None,
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 billing = BillingManager()
+mcp_jobs = PresentationJobs(billing)
+mcp_app = build_mcp(mcp_jobs)
 STATIC_DIR = pathlib.Path(__file__).resolve().parent / "static"
 JOBS_ROOT = BASE_DIR / "workspace" / "jobs"
 JOBS_ROOT.mkdir(parents=True, exist_ok=True)
 
 
+@app.middleware("http")
+async def access_control(request: Request, call_next):
+    path = request.url.path
+    protected = path.startswith(("/api/", "/artifacts/")) or path == "/mcp" or path.startswith("/mcp/")
+    try:
+        if protected and not (path == "/api/session" and request.method == "POST"):
+            request.state.principal = await authenticate_request(billing, request)
+            if path.startswith("/api/settings/") or path in ("/api/health/details", "/api/wallet/topup", "/api/wallet/keys", "/api/wallet/keys/revoke"):
+                if request.state.principal["tier"] != "admin":
+                    raise HTTPException(403, "Administrator required")
+        response = await call_next(request)
+    except HTTPException as exc:
+        response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if protected:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+class LoginRequest(BaseModel):
+    api_key: str
+
+
+@app.post("/api/session")
+async def login(req: LoginRequest, request: Request):
+    check_origin(request, required=False)
+    if not secure_cookie() and request.url.hostname not in ("localhost", "127.0.0.1", "::1", "testserver"):
+        raise HTTPException(400, "Insecure cookies are allowed only on loopback")
+    token = await create_session(billing, req.api_key)
+    response = JSONResponse({"authenticated": True})
+    response.set_cookie(COOKIE, token, httponly=True, secure=secure_cookie(), samesite="strict", max_age=8 * 3600)
+    return response
+
+
+@app.get("/api/session")
+async def session_info(request: Request):
+    return {"user_id": request.state.principal["user_id"], "admin": request.state.principal["tier"] == "admin"}
+
+
+@app.delete("/api/session")
+async def logout(request: Request):
+    await delete_session(billing, request.cookies.get(COOKIE, ""))
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(COOKIE)
+    return response
+
+
 class CreateJobRequest(BaseModel):
-    prompt_cn: str
+    prompt_cn: str = Field(min_length=1, max_length=100000)
     task_type: str = "ppt"  # "ppt", "video", "composite"
     template_id: str = "auto"  # "auto", "gorden:mckinsey-style", "frontend-slides", "ppt-master", "yonyou-ci-bg", etc.
-    slide_count: int = 0  # 0 = 不限页数 (AI 根据内容逻辑自动决定页数)
+    slide_count: int = Field(default=0, ge=0, le=60)
     visual_style: str = "executive-dark"
     duration_seconds: int = 9
     aspect_ratio: str = "16:9"
     master_reasoning_engine: str = "auto"  # "auto", "codex_login", "claude_login", "deepseek_api"
     execution_mode: str = "auto"
-    api_key: str = DEFAULT_DEMO_API_KEY
 
 
 class TopupRequest(BaseModel):
-    api_key: str = DEFAULT_DEMO_API_KEY
     amount: int = 500
     channel: str = "微信支付 Native"
 
 
 class CreateKeyRequest(BaseModel):
-    current_api_key: str = DEFAULT_DEMO_API_KEY
     name: str = "Cursor / Claude Desktop 生产密钥"
 
 
@@ -90,11 +161,6 @@ class ModelSettingsUpdate(BaseModel):
     account_safe_mode: Optional[bool] = None
     account_safe_proxy: Optional[str] = None
     allow_sandbox_fallback: Optional[bool] = None
-
-
-@app.on_event("startup")
-async def on_startup():
-    await billing.initialize()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -123,6 +189,11 @@ async def serve_gorden_preview(slug: str):
 
 
 @app.get("/health")
+async def public_health():
+    return {"status": "alive"}
+
+
+@app.get("/api/health/details")
 async def gateway_health():
     settings = get_runtime_settings()
     worker_url = settings["overseas_worker_url"]
@@ -154,7 +225,7 @@ async def gateway_health():
             "openai_configured": bool(settings.get("openai_api_key")),
             "jimeng_configured": bool(settings.get("jimeng_api_key")),
             "account_safe_mode": settings.get("account_safe_mode", True),
-            "account_safe_proxy": settings.get("account_safe_proxy", ""),
+            "account_safe_proxy": bool(settings.get("account_safe_proxy")),
             "allow_sandbox_fallback": settings.get("allow_sandbox_fallback", True),
         },
         "installed_ppt_skills": list_installed_ppt_skills(),
@@ -183,7 +254,7 @@ async def get_model_settings():
         "jimeng_configured": bool(s["jimeng_api_key"]),
         "overseas_worker_url": s["overseas_worker_url"],
         "account_safe_mode": s.get("account_safe_mode", True),
-        "account_safe_proxy": s.get("account_safe_proxy", ""),
+        "account_safe_proxy": "***" if s.get("account_safe_proxy") else "",
         "allow_sandbox_fallback": s["allow_sandbox_fallback"],
     }
 
@@ -195,41 +266,58 @@ async def update_model_settings(req: ModelSettingsUpdate):
 
 
 @app.get("/api/wallet")
-async def get_wallet(api_key: str = Query(DEFAULT_DEMO_API_KEY)):
+async def get_wallet(request: Request):
     try:
-        return await billing.get_wallet_overview(api_key)
+        return await billing.get_wallet_overview(request.state.principal["api_key"])
     except PermissionError as e:
         raise HTTPException(status_code=401, detail=str(e))
 
 
 @app.post("/api/wallet/topup")
-async def topup_wallet(req: TopupRequest):
+async def topup_wallet(req: TopupRequest, request: Request):
+    api_key = request.state.principal["api_key"]
     try:
-        res = await billing.topup_credits(req.api_key, req.amount, req.channel)
-        overview = await billing.get_wallet_overview(req.api_key)
+        res = await billing.topup_credits(api_key, req.amount, req.channel)
+        overview = await billing.get_wallet_overview(api_key)
         return {"topup": res, "wallet": overview}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/wallet/keys")
-async def create_key(req: CreateKeyRequest):
+async def create_key(req: CreateKeyRequest, request: Request):
+    api_key = request.state.principal["api_key"]
     try:
-        new_k = await billing.create_new_api_key(req.current_api_key, req.name)
-        overview = await billing.get_wallet_overview(req.current_api_key)
+        new_k = await billing.create_new_api_key(api_key, req.name)
+        overview = await billing.get_wallet_overview(api_key)
         return {"new_key": new_k, "wallet": overview}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class RevokeKeyRequest(BaseModel):
+    key_id: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+@app.post('/api/wallet/keys/revoke')
+async def revoke_key(req: RevokeKeyRequest, request: Request):
+    try:
+        return await billing.revoke_api_key(request.state.principal, req.key_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.get("/api/jobs")
-async def get_recent_jobs(limit: int = 12):
-    jobs = await billing.list_jobs(limit=limit)
+async def get_recent_jobs(request: Request, limit: int = 12):
+    jobs = await billing.list_jobs(request.state.principal["user_id"], limit=limit)
     return {"jobs": jobs}
 
 
 @app.post("/api/jobs/stream")
-async def stream_create_job(req: CreateJobRequest):
+async def stream_create_job(req: CreateJobRequest, request: Request):
+    if os.getenv('NBPPT_REQUIRE_ISOLATION', 'false').lower() == 'true' and (req.task_type != 'ppt' or req.execution_mode not in ('auto', 'codex_cli')):
+        raise HTTPException(422, '当前部署仅开放隔离运行的 Codex PPT 生成')
+    api_key = request.state.principal["api_key"]
     task_type = req.task_type if req.task_type in TASK_FREEZE_CREDITS else "ppt"
     freeze_amount = TASK_FREEZE_CREDITS[task_type]
     job_id = f"{task_type}_{uuid.uuid4().hex[:10]}"
@@ -240,7 +328,7 @@ async def stream_create_job(req: CreateJobRequest):
     async def event_pipeline():
         try:
             freeze_info = await billing.try_freeze_credits(
-                req.api_key, job_id, task_type, req.prompt_cn, freeze_amount
+                api_key, job_id, task_type, req.prompt_cn, freeze_amount
             )
             bal_after = freeze_info["balance_after_freeze"]
             msg_try = f"[TCC 预授权] 已冻结 {freeze_amount} 算力点（可用余额 {bal_after} 点）"
@@ -287,6 +375,7 @@ async def stream_create_job(req: CreateJobRequest):
                     "execution_mode": req.execution_mode,
                 },
             )
+            en_spec["requested_slide_count"] = req.slide_count
             await billing.save_compiled_spec(job_id, en_spec)
 
             summary_cn = en_spec.get("task_summary_cn", "")
@@ -360,6 +449,9 @@ async def stream_create_job(req: CreateJobRequest):
             }
             yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
 
+        except asyncio.CancelledError:
+            await asyncio.shield(billing.cancel_refund(job_id, "Client disconnected"))
+            raise
         except Exception as exc:
             refund_info = await billing.cancel_refund(job_id, str(exc))
             err_payload = {
@@ -374,11 +466,23 @@ async def stream_create_job(req: CreateJobRequest):
 
 
 @app.get("/artifacts/{job_id}/{file_path:path}")
-async def serve_job_artifact(job_id: str, file_path: str):
-    target = (JOBS_ROOT / job_id / "output" / file_path).resolve()
-    allowed_root = (JOBS_ROOT / job_id / "output").resolve()
-    if not str(target).startswith(str(allowed_root)) or not target.exists():
-        raise HTTPException(status_code=404, detail="Artifact not found")
+async def serve_job_artifact(job_id: str, file_path: str, request: Request):
+    job = await billing.get_job(job_id, request.state.principal["user_id"])
+    if not job or job["status"] != "COMPLETED":
+        raise HTTPException(404, "Artifact not found")
+    try:
+        safe_job_id(job_id)
+        root = JOBS_ROOT / job_id / "output"
+        manifest = json.loads(contained_file(root, "delivery.json").read_text())
+        entry = next((f for f in manifest["files"] if f["path"] == file_path), None)
+        if entry is None:
+            raise ValueError("Not published")
+        target = contained_file(root, file_path)
+        digest = await asyncio.to_thread(lambda: hashlib.sha256(target.read_bytes()).hexdigest())
+        if target.stat().st_size != entry["size"] or digest != entry["sha256"]:
+            raise ValueError("Artifact changed after verification")
+    except (ValueError, OSError, KeyError):
+        raise HTTPException(404, "Artifact not found")
 
     suffix = target.suffix.lower()
     media_type = "application/octet-stream"
@@ -388,6 +492,7 @@ async def serve_job_artifact(job_id: str, file_path: str):
         headers["Content-Disposition"] = f'attachment; filename="{target.name}"'
     elif suffix == ".html":
         media_type = "text/html; charset=utf-8"
+        headers["Content-Security-Policy"] = "sandbox allow-scripts; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'"
     elif suffix == ".mp4":
         media_type = "video/mp4"
     elif suffix == ".png":
@@ -396,61 +501,5 @@ async def serve_job_artifact(job_id: str, file_path: str):
     return FileResponse(target, media_type=media_type, headers=headers)
 
 
-@app.post("/mcp")
-async def mcp_jsonrpc_endpoint(request: Request, authorization: Optional[str] = Header(None)):
-    api_key = DEFAULT_DEMO_API_KEY
-    if authorization:
-        api_key = authorization.replace("Bearer ", "").strip() or DEFAULT_DEMO_API_KEY
-
-    body = await request.json()
-    rpc_id = body.get("id", 1)
-    method = body.get("method", "")
-    params = body.get("params", {}) or {}
-
-    if method == "initialize":
-        return JSONResponse(
-            {
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "result": {
-                    "protocolVersion": "2025-03-26",
-                    "serverInfo": {"name": "China-Personal-Agent-ProMedia-MCP", "version": "1.2.0"},
-                    "capabilities": {"tools": {"listChanged": False}},
-                },
-            }
-        )
-    elif method == "tools/list":
-        return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": {"tools": MCP_TOOLS_MANIFEST}})
-    elif method == "tools/call":
-        tool_name = params.get("name", "")
-        arguments = params.get("arguments", {}) or {}
-        try:
-            res = await execute_mcp_tool_call(billing, api_key, tool_name, arguments)
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": rpc_id,
-                    "result": {
-                        "content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False, indent=2)}],
-                        "isError": False,
-                    },
-                }
-            )
-        except Exception as exc:
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": rpc_id,
-                    "result": {
-                        "content": [{"type": "text", "text": str(exc)}],
-                        "isError": True,
-                    },
-                }
-            )
-    elif method == "ping":
-        return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": {}})
-
-    return JSONResponse(
-        {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32601, "message": f"Method not found: {method}"}},
-        status_code=400,
-    )
+# Mount after application routes; SDK handles initialization, notifications and transport.
+app.mount("/", mcp_app)
