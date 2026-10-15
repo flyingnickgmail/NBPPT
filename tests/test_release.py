@@ -86,3 +86,17 @@ def test_download_replaces_hardlink_privately(tmp_path, monkeypatch):
     assert unrelated.read_bytes() == b'original'
     assert (directory/name).read_bytes() == data
     assert (directory/name).stat().st_mode & 0o077 == 0
+
+
+def test_production_capabilities_and_disabled_modes(manager, monkeypatch):
+    import httpx
+    from gateway import main
+    monkeypatch.setenv('NBPPT_REQUIRE_ISOLATION','true')
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),base_url='https://test',headers={'Authorization':'Bearer '+KEY_A}) as client:
+            assert (await client.get('/api/session')).json()['ppt_only'] is True
+            for extra in ({'task_type':'video'},{'execution_mode':'claude_cli'}):
+                r=await client.post('/api/jobs/stream',json={'prompt_cn':'test',**extra})
+                assert r.status_code==422
+            assert balance(manager)==(2000,0)
+    asyncio.run(scenario())

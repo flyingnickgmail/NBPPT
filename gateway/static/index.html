@@ -238,7 +238,7 @@
         </div>
         <span style="color: var(--border-strong);">/</span>
         <div class="flex items-center gap-2">
-          <span style="color: var(--text-muted);">海外防封沙盒</span>
+          <span style="color: var(--text-muted);">任务隔离</span>
           <span id="badgeAntiBan" class="font-mono-code font-medium" style="color: var(--status-ok-text);">Semaphore(1) 串行保护</span>
         </div>
       </div>
@@ -260,7 +260,7 @@
           <svg class="w-3.5 h-3.5" style="color: var(--text-secondary);" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
           </svg>
-          <span>账号与防封配置</span>
+          <span>账号与执行配置</span>
         </button>
 
         <!-- MCP Endpoint -->
@@ -308,7 +308,7 @@
           <div class="seg-group grid grid-cols-3 gap-1">
             <button type="button" onclick="selectTaskType('ppt')" id="btnType_ppt" class="seg-item active py-2 px-2 text-xs text-center cursor-pointer">
               <div>仅生成 PPT</div>
-              <div class="text-[10px] opacity-75 font-normal">大纲推演+填母版</div>
+              <div class="text-[10px] opacity-75 font-normal">原文规划+逐页绘图</div>
             </button>
             <button type="button" onclick="selectTaskType('video')" id="btnType_video" class="seg-item py-2 px-2 text-xs text-center cursor-pointer">
               <div>图形化视频</div>
@@ -493,7 +493,7 @@
               <label for="slideCount" class="block text-[11px] mb-1" style="color: var(--text-muted);">幻灯片页数（支持不限页数）</label>
               <select id="slideCount" class="studio-input w-full px-2.5 py-1.5 text-xs">
                 <option value="0" selected>不限页数 (AI 按内容自动决定)</option>
-                <option value="2">2 页极速 (约45秒)</option>
+                <option value="2">2 页精简</option>
                 <option value="3">3 页精粹</option>
                 <option value="4">4 页标准</option>
                 <option value="6">6 页详尽</option>
@@ -602,7 +602,7 @@
           <div class="flex items-center justify-between">
             <div>
               <h3 class="text-sm font-semibold" style="color: var(--text-primary);">PPTX 母版成稿与版面预览</h3>
-              <p class="text-xs" style="color: var(--text-muted);">16:9 宽屏商业排版 · 300 DPI 数据图表内嵌</p>
+              <p class="text-xs" style="color: var(--text-muted);">16:9 宽屏商业排版 · 逐页高清图片 · 内容需复核</p>
             </div>
             <div class="flex items-center gap-2">
               <a id="htmlDeckBtn" href="#" target="_blank" class="hidden btn-secondary px-3 py-1.5 text-xs font-medium">
@@ -642,7 +642,7 @@
           </div>
 
           <div class="studio-inset px-3.5 py-2.5 flex items-center justify-between text-xs">
-            <span style="color: var(--text-muted);">防封沙盒：<strong class="font-medium" style="color: var(--text-primary);">单并发串行保护已启用</strong></span>
+            <span style="color: var(--text-muted);">执行保护：<strong class="font-medium" style="color: var(--text-primary);">单并发串行保护已启用</strong></span>
             <span id="billingDetail" class="font-mono-code" style="color: var(--text-secondary);">等待执行</span>
           </div>
         </div>
@@ -656,8 +656,8 @@
     <div class="studio-card max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto space-y-5">
       <div class="flex items-center justify-between border-b pb-3.5" style="border-color: var(--border-hairline);">
         <div>
-          <h3 class="text-base font-semibold" style="color: var(--text-primary);">个人账号登录与海外防封号安全设置</h3>
-          <p class="text-xs mt-0.5" style="color: var(--text-muted);">支持复用服务器 `codex login` / `claude login` 个人账号，并提供四层防封隔离保护</p>
+          <h3 class="text-base font-semibold" style="color: var(--text-primary);">个人账号登录与执行设置</h3>
+          <p class="text-xs mt-0.5" style="color: var(--text-muted);">支持复用服务器 `codex login` / `claude login` 个人账号，并提供串行执行与任务隔离；不保证账号不会受限</p>
         </div>
         <button onclick="closeModelSettingsModal()" class="btn-secondary px-2.5 py-1 text-xs cursor-pointer">关闭</button>
       </div>
@@ -683,7 +683,7 @@
       <!-- Anti-Ban Controls -->
       <div class="studio-inset p-4 space-y-3">
         <div class="flex items-center justify-between">
-          <span class="text-xs font-semibold" style="color: var(--text-primary);">海外服务器个人账号防封号四层保护</span>
+          <span class="text-xs font-semibold" style="color: var(--text-primary);">执行账号与并发设置</span>
           <label class="flex items-center gap-2 text-xs font-medium cursor-pointer" style="color: var(--status-ok-text);">
             <input id="cfgAccountSafeMode" type="checkbox" checked class="rounded" />
             <span>启用单并发串行锁与拟人间隔</span>
@@ -961,13 +961,23 @@
         ]);
         if (hResp.ok) {
           const session = await hResp.json();
+          if (session.ppt_only) {
+            ["btnType_video", "btnType_composite"].forEach(id => document.getElementById(id).hidden = true);
+            document.querySelector('[onclick="fillPreset(3)"]').hidden = true;
+            document.getElementById("videoDuration").parentElement.hidden = true;
+            const execution = document.getElementById("executionModeSelect");
+            execution.value = "codex_cli"; execution.disabled = true;
+            document.getElementById("masterEngineSelect").parentElement.hidden = true;
+          }
           document.querySelectorAll('[onclick="openModelSettingsModal()"], [onclick="openTopupModal()"]').forEach(el => { el.hidden = !session.admin; });
           const detail = session.admin ? await fetch("/api/health/details") : null;
           const h = detail && detail.ok ? await detail.json() : {};
           const cli = h.local_cli_status || {};
           const mc = h.models_configured || {};
           const engineBadge = document.getElementById("badgeMasterEngine");
-          if (cli.codex_logged_in) {
+          if (session.ppt_only) {
+            engineBadge.textContent = "Codex · 原文规划与逐页绘图";
+          } else if (cli.codex_logged_in) {
             engineBadge.textContent = `Codex (${cli.codex_model}) · ${mc.claude_model || 'GLM-5'}`;
           } else if (mc.anthropic_configured) {
             engineBadge.textContent = `Claude / ${mc.claude_model}`;
@@ -975,7 +985,7 @@
             engineBadge.textContent = "本地结构化引擎";
           }
           const antiBanBadge = document.getElementById("badgeAntiBan");
-          antiBanBadge.textContent = mc.account_safe_mode
+          antiBanBadge.textContent = session.ppt_only ? "单任务隔离 · 串行执行" : mc.account_safe_mode
             ? (mc.account_safe_proxy ? `串行锁 + 住宅代理` : `Semaphore(1) 串行保护`)
             : "标准模式";
           if (Array.isArray(h.templates)) {
