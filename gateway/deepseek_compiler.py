@@ -358,181 +358,26 @@ def _enrich_spec_with_prompts(spec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _build_local_structured_spec(cn_prompt: str, task_type: str, extra_params: Dict[str, Any]) -> Dict[str, Any]:
-    requested_tpl = extra_params.get("template_id", "auto")
-    match_info = match_template_for_prompt(cn_prompt, requested_tpl)
-    matched_tpl = match_info["template"]
-    tpl_id = matched_tpl["id"]
-
-    palette = VISUAL_PALETTES.get(tpl_id) or VISUAL_PALETTES["yonyou-ci-bg"]
-    raw_slide_count = int(extra_params.get("slide_count", 0))
-    if raw_slide_count <= 0:
-        slide_count_mode = "unlimited"
-        m_pages = re.search(r"(\d+)\s*页", cn_prompt)
-        slide_count = max(2, min(15, int(m_pages.group(1)))) if m_pages else 4
-    else:
-        slide_count_mode = "fixed"
-        slide_count = max(2, min(15, raw_slide_count))
-    duration = int(extra_params.get("duration_seconds", 9))
-    aspect_ratio = extra_params.get("aspect_ratio", "16:9")
-
-    # Clean core topic from prompt
-    clean_p = re.sub(r"^(帮我|请|使用|用|按照|基于|围绕|把|将)+", "", cn_prompt.strip())
-    if "『" in cn_prompt and "』" in cn_prompt:
-        topic = cn_prompt.split("『", 1)[1].split("』", 1)[0]
-    else:
-        topic = clean_p.split("，")[0].split("。")[0][:22] or "企业级AI智能体降本增效方案"
-
-    slide_blueprints = [
-        {
-            "page_type": "executive-message",
-            "kicker": "01 核心主张与目标",
-            "action_title_cn": f"{topic}：核心价值主张与量化目标",
-            "subtitle_cn": "从传统人工离散作业升级为 AI 数据驱动的端到端闭环体系",
-            "cards": [
-                {"header_cn": "综合成本压降", "metric_cn": "12-18%", "items_cn": ["智能比价与集采统谈", "消除历史价格信息孤岛"]},
-                {"header_cn": "全链路周转提效", "metric_cn": "35-50%", "items_cn": ["需求与订单自动处理", "跨部门审批协同加速"]},
-                {"header_cn": "履约与合规风控", "metric_cn": "24/7", "items_cn": ["供应商履约实时预警", "全流程可追溯合规审计"]},
-            ],
-            "bottom_flow_cn": ["统一数据底座", "AI 智能决策引擎", "可审计业务结果"],
-            "bullets_cn": [
-                "综合成本压降 12-18%：通过智能比价模型与跨事业部集采统谈，显著压缩溢价空间",
-                "全链路周转提效 35-50%：打通需求预测、自动审单与合同合规审查全流程",
-                "24/7 实时风控闭环：动态监测供应商交付准时率与质量波动，前置阻断断供风险",
-            ],
-        },
-        {
-            "page_type": "architecture-diagram",
-            "kicker": "02 总体架构蓝图",
-            "action_title_cn": "三层解耦智能体架构支撑全业务场景闭环",
-            "subtitle_cn": "数据感知层、智能推理层与业务执行层标准协同",
-            "cards": [
-                {"header_cn": "统一数据感知层", "metric_cn": "100% 归集", "items_cn": ["ERP/SRM 主数据实时同步", "外部行情与舆情接入"]},
-                {"header_cn": "多智能体推理层", "metric_cn": "毫秒级响应", "items_cn": ["寻源议价与库存预测算法", "红线合规规则自动校验"]},
-                {"header_cn": "业务协同执行层", "metric_cn": "端到端闭环", "items_cn": ["人机协同确认机制", "异常工单秒级派发与回滚"]},
-            ],
-            "bottom_flow_cn": ["多源数据治理", "Agent 策略推演", "人工确认与执行"],
-            "bullets_cn": [
-                "统一数据感知层：归集主数据、历史交易流水与外部行情，消除口径不一致",
-                "多智能体推理层：内置寻源比价、动态安全库存与合同风险识别三大专精模型",
-                "业务协同执行层：严格保留关键节点人工确认与一键回滚机制，确保生产安全",
-            ],
-        },
-        {
-            "page_type": "roadmap",
-            "kicker": "03 分阶段推进路线",
-            "action_title_cn": "按准备、试点、验证与推广四步稳妥推进",
-            "subtitle_cn": "以数据清单、合规口径与阶段验收基线驱动规模化落地",
-            "cards": [
-                {"header_cn": "阶段一：准备立项", "metric_cn": "M1-M2", "items_cn": ["数据盘点与权限合规", "锁定试点基线指标"]},
-                {"header_cn": "阶段二：标杆试点", "metric_cn": "M3-M4", "items_cn": ["核心品类智能寻源上线", "对照组 ROI 实测验证"]},
-                {"header_cn": "阶段三：全面推广", "metric_cn": "M5-M6", "items_cn": ["多事业部规模化复制", "考核指标固化与移交"]},
-            ],
-            "bottom_flow_cn": ["数据采集完整性", "AI 能力采纳率", "经审计业务 ROI"],
-            "bullets_cn": [
-                "阶段一（M1-M2 准备）：完成数据盘点、合规口径对齐与试点基线锁定",
-                "阶段二（M3-M4 试点）：在核心业务单元跑通最小闭环，实测验证降本提效基线",
-                "阶段三（M5-M6 推广）：通过效果评审后分区域推广，实现全集团指标固化",
-            ],
-        },
-        {
-            "page_type": "evidence-infographic",
-            "kicker": "04 收益测算与保障",
-            "action_title_cn": "量化投资回报清晰，红线门禁保障交付确定性",
-            "subtitle_cn": "建立可量化、可归因、可退出的商业价值兑现机制",
-            "cards": [
-                {"header_cn": "投资回收周期", "metric_cn": "< 6 个月", "items_cn": ["首期试点即可收回投入", "边际扩展成本极低"]},
-                {"header_cn": "数据与合规门禁", "metric_cn": "零越权", "items_cn": ["核心账套只读不写", "关键审批保留人工确认"]},
-                {"header_cn": "组织与运维移交", "metric_cn": "100% 赋能", "items_cn": ["提供标准 SOP 与培训", "支持驻场联调与陪跑"]},
-            ],
-            "bottom_flow_cn": ["基线对赌锁定", "合规门禁守护", "季度价值审计"],
-            "bullets_cn": [
-                "高确定性 ROI：首期试点预计 6 个月内收回投资，年化净节约显著",
-                "严格安全红线：默认只读接入核心业务系统，关键价格与合同审批100%人工确认",
-                "长效运维机制：配套标准化操作手册与业务团队赋能，确保系统高采纳率",
-            ],
-        },
-    ]
-
-    slides = []
-    for i in range(1, slide_count + 1):
-        bp = dict(slide_blueprints[(i - 1) % len(slide_blueprints)])
-        bp["slide_num"] = i
-        bp["kicker"] = f"0{i} {bp['kicker'].split(' ', 1)[-1]}"
-        slides.append(bp)
-
-    spec = {
+    """Prepare source/configuration only; content must come from a real planner."""
+    match = match_template_for_prompt(cn_prompt, extra_params.get("template_id", "auto"))
+    template = match["template"]
+    count = int(extra_params.get("slide_count", 0))
+    if not cn_prompt.strip() or not 0 <= count <= 60:
+        raise ValueError("请输入原文，页数须为 0（自动）或 1–60")
+    return {
         "task_type": task_type,
         "original_prompt_cn": cn_prompt,
-        "task_summary_cn": f"围绕「{topic}」构建高确定性商业汇报方案",
-        "template_id": tpl_id,
-        "matched_template": {
-            "id": tpl_id,
-            "gorden_slug": matched_tpl.get("gorden_slug", ""),
-            "skill_engine": matched_tpl.get("skill_engine", ""),
-            "name": matched_tpl["name"],
-            "badge": matched_tpl["badge"],
-            "source_skill": matched_tpl["source_skill"],
-            "real_pptx_path": matched_tpl.get("real_pptx_path", ""),
-            "preview_url": matched_tpl.get("preview_url", ""),
-            "match_mode": match_info["match_mode"],
-            "match_reason_cn": match_info["match_reason_cn"],
-        },
-        "visual_style": tpl_id,
-        "slide_count": slide_count,
-        "slide_count_mode": slide_count_mode,
-        "video_duration_sec": duration,
-        "video_aspect_ratio": aspect_ratio,
-        "compiler_engine": "local-heuristic-fallback",
-        "is_real_llm": False,
-        "palette": palette,
-        "logical_reasoning_chain_cn": [
-            f"1. 详细内容规划：围绕「{topic}」梳理 {slide_count} 页金字塔结构与每页模块卡片。",
-            f"2. 视觉体系锁定：{match_info['match_reason_cn']}。",
-            f"3. 执行提示词生成：已按 16:9 咨询级纯图片 PPT 规范生成逐页 `image_gen` 提示词与标准 Markdown 脚本。",
-        ],
-        "master_outline_cn": {
-            "core_thesis": f"通过标准化智能架构推进「{topic}」，实现可量化、可审计的降本增效闭环",
-            "narrative_arc": "核心主张与目标 → 总体架构蓝图 → 分阶段推进路线 → 收益测算与保障",
-            "key_pillars": [s["action_title_cn"] for s in slides[:4]],
-        },
-        "kpis": [
-            {"label": "综合成本优化", "value": "12-18%", "delta": "智能比价与集采"},
-            {"label": "流程周转提效", "value": "35-50%", "delta": "端到端自动协同"},
-            {"label": "合规风控覆盖", "value": "24/7", "delta": "实时预警与审计"},
-            {"label": "投资回收周期", "value": "<6个月", "delta": "试点快速验证"},
-        ],
-        "slide_outline": slides,
-        "video_scenes": [
-            {
-                "scene_id": 1,
-                "duration_sec": max(2, duration // 3),
-                "motion_template": "node_topology",
-                "title_cn": topic[:18],
-                "subtitle_cn": "多智能体协同拓扑与数据底座",
-                "data_nodes_cn": ["数据感知", "AI推理", "策略寻源", "风控闭环"],
-                "metric_highlight": "8.5x",
-            },
-            {
-                "scene_id": 2,
-                "duration_sec": max(2, duration // 3),
-                "motion_template": "bar_race_chart",
-                "title_cn": "降本增效分阶段兑现曲线",
-                "subtitle_cn": "试点期至全面推广期效能跃升",
-                "data_nodes_cn": ["准备期", "试点一", "试点二", "全面推广"],
-                "metric_highlight": "+320%",
-            },
-            {
-                "scene_id": 3,
-                "duration_sec": max(2, duration - 2 * (duration // 3)),
-                "motion_template": "radial_kpi_matrix",
-                "title_cn": "核心经营指标达成全景",
-                "subtitle_cn": "全链路可追溯 ROI 审计闭环",
-                "data_nodes_cn": ["成本-15%", "提效+45%", "合规100%"],
-                "metric_highlight": "99.2%",
-            },
-        ],
+        "task_summary_cn": cn_prompt.strip().splitlines()[0][:100],
+        "template_id": template["id"], "matched_template": template,
+        "visual_style": template["id"],
+        "palette": VISUAL_PALETTES.get(template["id"], template.get("palette", {})),
+        "slide_count": count, "slide_count_mode": "fixed" if count else "auto",
+        "video_duration_sec": int(extra_params.get("duration_seconds", 9)),
+        "video_aspect_ratio": extra_params.get("aspect_ratio", "16:9"),
+        "compiler_engine": "awaiting-planner", "is_real_llm": False,
+        "slide_outline": [], "video_scenes": [], "kpis": [],
+        "master_outline_cn": {}, "logical_reasoning_chain_cn": [],
     }
-    return _enrich_spec_with_prompts(spec)
 
 
 async def _reason_with_codex_cli(codex_bin: str, user_payload: str, proxy_url: str = "") -> Optional[Dict[str, Any]]:
@@ -629,6 +474,12 @@ async def _reason_with_openai_compatible(
 
 
 def _merge_llm_spec(base_spec: Dict[str, Any], llm_spec: Dict[str, Any], engine_label: str) -> Dict[str, Any]:
+    required = ["video_scenes"] if base_spec["task_type"] == "video" else ["slide_outline"]
+    if base_spec["task_type"] == "composite":
+        required.append("video_scenes")
+    for key in required:
+        if not isinstance(llm_spec.get(key), list) or not llm_spec[key]:
+            raise ValueError(f"规划缺少 {key}，不能补入示例内容")
     merged = dict(base_spec)
     for k in (
         "task_summary_cn",
@@ -646,6 +497,20 @@ def _merge_llm_spec(base_spec: Dict[str, Any], llm_spec: Dict[str, Any], engine_
     return _enrich_spec_with_prompts(merged)
 
 
+def validate_direct_completion(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate the direct worker's delivery contract before saving or settling it."""
+    spec = event.get("compiled_spec") or {}
+    qa = event.get("qa_report") or {}
+    urls = event.get("cdn_urls") or {}
+    count = len(spec.get("slide_outline") or [])
+    if (not count or qa.get("status") != "PASSED"
+            or any(qa.get(key) != count for key in ("planned_slides", "delivered_slides", "pptx_slides_count"))
+            or not urls.get("pptx_url") or not urls.get("html_deck_url")
+            or len(urls.get("slide_preview_urls") or []) != count):
+        raise RuntimeError("直接生成未通过完整交付检查")
+    return spec
+
+
 async def compile_cn_request_to_english_spec(
     cn_prompt: str, task_type: str, extra_params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
@@ -654,6 +519,23 @@ async def compile_cn_request_to_english_spec(
     and build the execution prompts (`codex_direct_prompt` / `claude_direct_prompt`) for Stage 2.
     """
     extra_params = extra_params or {}
+    # Let the generating agent read the source and use skills in one context.
+    # A local four-slide sample is never an acceptable replacement for user content.
+    if task_type == "ppt" and extra_params.get("execution_mode", "auto") != "claude_cli":
+        match = match_template_for_prompt(cn_prompt, extra_params.get("template_id", "auto"))
+        count = int(extra_params.get("slide_count", 0))
+        if not cn_prompt.strip() or not 0 <= count <= 60:
+            raise ValueError("请输入原文，页数须为 0（自动）或 1–60")
+        return {
+            "generation_contract": "skill-direct-v1",
+            "task_type": "ppt", "original_prompt_cn": cn_prompt,
+            "task_summary_cn": cn_prompt.strip().splitlines()[0][:100],
+            "template_id": match["template"]["id"], "matched_template": match["template"],
+            "template_match_reason_cn": match["match_reason_cn"],
+            "slide_count": count, "slide_count_mode": "fixed" if count else "auto",
+            "slide_outline": [], "compiler_engine": "Codex 技能直出（等待实际规划）",
+            "is_real_llm": False,
+        }
     base_spec = _build_local_structured_spec(cn_prompt, task_type, extra_params)
     settings = get_runtime_settings()
 
@@ -741,6 +623,4 @@ async def compile_cn_request_to_english_spec(
         except Exception as e:
             errors.append(f"DeepSeek: {type(e).__name__}")
 
-    if errors:
-        base_spec["compiler_engine"] = f"本地规划兜底 ({'; '.join(errors)[:60]})"
-    return base_spec
+    raise RuntimeError("内容规划失败，未生成替代内容：" + "; ".join(errors or ["无可用规划模型"]))

@@ -25,7 +25,7 @@ from gateway.config import (
     mask_key,
 )
 from gateway.billing_tcc import BillingManager
-from gateway.deepseek_compiler import compile_cn_request_to_english_spec, VISUAL_PALETTES
+from gateway.deepseek_compiler import compile_cn_request_to_english_spec, validate_direct_completion, VISUAL_PALETTES
 from gateway.template_registry import (
     GORDEN_ROOT,
     list_available_templates,
@@ -269,6 +269,9 @@ async def stream_create_job(req: CreateJobRequest):
                 if task_type == "ppt"
                 else "正在梳理【逻辑大纲 + Claude 图形化动效分镜脚本】"
             )
+            if task_type == "ppt" and req.execution_mode != "claude_cli":
+                engine_desc = "Codex 技能直出"
+                role_desc = "保留完整原文与客户风格，由生成代理统一规划和绘图"
             yield f"data: {json.dumps({'type': 'progress', 'pct': 20, 'job_id': job_id, 'message_cn': f'[主控 Agent 强逻辑推理] 调用 {engine_desc}，{role_desc}...'}, ensure_ascii=False)}\n\n"
 
             en_spec = await compile_cn_request_to_english_spec(
@@ -281,12 +284,15 @@ async def stream_create_job(req: CreateJobRequest):
                     "duration_seconds": req.duration_seconds,
                     "aspect_ratio": req.aspect_ratio,
                     "master_reasoning_engine": engine_choice,
+                    "execution_mode": req.execution_mode,
                 },
             )
             await billing.save_compiled_spec(job_id, en_spec)
 
             summary_cn = en_spec.get("task_summary_cn", "")
             real_badge = "真实大模型推理完成" if en_spec.get("is_real_llm") else "结构化推理完成"
+            if en_spec.get("generation_contract") == "skill-direct-v1":
+                real_badge = "原文已准备，等待 Codex 实际规划"
             msg_spec = f"[{real_badge}] {summary_cn} · 引擎：{en_spec.get('compiler_engine')}"
             yield f"data: {json.dumps({'type': 'spec_compiled', 'pct': 26, 'job_id': job_id, 'message_cn': msg_spec, 'en_spec': en_spec}, ensure_ascii=False)}\n\n"
 
@@ -327,6 +333,10 @@ async def stream_create_job(req: CreateJobRequest):
 
             if not final_worker_evt:
                 raise RuntimeError("未收到算力底座完成信号")
+
+            if en_spec.get("generation_contract") == "skill-direct-v1":
+                en_spec = validate_direct_completion(final_worker_evt)
+                await billing.save_compiled_spec(job_id, en_spec)
 
             settle_info = await billing.confirm_settle(
                 job_id,

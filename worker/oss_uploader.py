@@ -3,6 +3,7 @@ Artifact Archiver & CDN / Local Static URL Signer.
 Supports local static delivery out-of-the-box and optional Aliyun OSS / S3 / R2 upload in production.
 """
 import pathlib
+import re
 from typing import Dict, Any
 
 
@@ -42,4 +43,8 @@ def upload_job_artifacts_to_cdn(job_id: str, output_dir: pathlib.Path, gateway_b
             else:
                 result["chart_urls"].append(url)
 
+    result["slide_preview_urls"].sort(
+        key=lambda url: int(re.search(r"slide_preview_(\d+)\.png$", url).group(1))
+        if re.search(r"slide_preview_(\d+)\.png$", url) else 0
+    )
     return result
