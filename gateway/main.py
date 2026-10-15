@@ -114,7 +114,8 @@ async def login(req: LoginRequest, request: Request):
 
 @app.get("/api/session")
 async def session_info(request: Request):
-    return {"user_id": request.state.principal["user_id"], "admin": request.state.principal["tier"] == "admin"}
+    return {"user_id": request.state.principal["user_id"], "admin": request.state.principal["tier"] == "admin",
+            "ppt_only": os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() == "true"}
 
 
 @app.delete("/api/session")
