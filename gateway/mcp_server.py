@@ -3,6 +3,9 @@ import asyncio
 import hashlib
 import json
 import re
+import os
+from urllib.parse import urlparse
+from mcp.server.transport_security import TransportSecuritySettings
 from typing import Annotated
 
 import httpx
@@ -169,4 +172,9 @@ def build_mcp(jobs):
         """完成后再次验证文件摘要，返回PPTX、HTML和逐页PNG的下载路径及摘要。"""
         return await jobs.artifacts(principal(ctx), job_id)
 
-    return server.streamable_http_app(json_response=True, stateless_http=True)
+    origin = os.getenv('NBPPT_PUBLIC_ORIGIN', 'http://127.0.0.1:8000')
+    parsed = urlparse(origin)
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=True,
+        allowed_hosts=['127.0.0.1:*', 'localhost:*', '[::1]:*', parsed.netloc],
+        allowed_origins=[origin])
+    return server.streamable_http_app(json_response=True, stateless_http=True, transport_security=security)

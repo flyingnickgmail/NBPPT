@@ -1,0 +1,31 @@
+[Unit]
+Description=NBPPT isolated Codex worker
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=nbppt-worker
+Group=nbppt-artifacts
+WorkingDirectory=/opt/NBPPT
+EnvironmentFile=/etc/nbppt/worker.env
+Environment=HOME=/var/lib/nbppt-worker
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/NBPPT/.venv/bin/uvicorn worker.worker_api:app --host 127.0.0.1 --port 8001
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# ProtectKernelTunables creates /proc submounts that prevent bwrap PID namespaces.
+# Non-root UID and bwrap capability removal protect kernel writes.
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/opt/NBPPT/workspace/jobs /var/lib/nbppt-worker
+InaccessiblePaths=/opt/NBPPT/workspace/data /var/lib/nbppt-gateway /etc/nbppt
+MemoryMax=2G
+TasksMax=256
+[Install]
+WantedBy=multi-user.target

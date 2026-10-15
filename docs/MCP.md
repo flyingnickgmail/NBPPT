@@ -64,3 +64,6 @@ python -m uvicorn worker.worker_api:app --host 127.0.0.1 --port 18781
 已通过 Computer Use 操作 ZCode 的 `nbppt-local` 连接，实际调用四个工具。第一次任务在 CLI 配置解析阶段失败，费用全退；修正 MCP 名称参数的字面引号后，第二次 `ppt_063884cae8` 完成5页生成和下载。五种版式为概览、数据对比、角色泳道、时间线、验收清单；逐页目视检查了测试样本12/7/5和计划/未知边界。7份下载文件摘要全部匹配，重新打开 PPTX 为5页。成功任务结算60平台算力点，失败任务0点，冻结余额归零；这不是外部模型实际账单。
 
 macOS：70项通过。Linux/Python3.12：69项通过，1项真实视频检查因容器未安装ffprobe而跳过。本轮仅本机接入，线上服务未部署、未重启。
+
+
+生产发布与隔离配置见 [deploy/production/README.md](../deploy/production/README.md)。公网仅允许 HTTPS；普通生成密钥不能访问管理接口，支持撤销。

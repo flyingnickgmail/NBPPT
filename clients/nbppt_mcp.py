@@ -1,5 +1,7 @@
 """Local stdio adapter for desktop clients. Credentials stay out of tool results."""
 import argparse
+import os
+import tempfile
 from contextlib import asynccontextmanager
 import hashlib
 import json
@@ -46,11 +48,11 @@ async def download_artifacts(config, result):
     if not re.fullmatch(r'ppt_[0-9a-f]{10}', job_id):
         raise ValueError('Invalid job id')
     root = Path(config['download_dir']).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory = root / job_id
     if directory.is_symlink():
         raise ValueError('Unsafe download destination')
-    directory.mkdir(exist_ok=True)
+    directory.mkdir(exist_ok=True, mode=0o700)
     base = config['url'].removesuffix('/mcp')
     paths = []
     async with httpx.AsyncClient(headers={'Authorization': 'Bearer ' + config['api_key']}, timeout=120, trust_env=False) as http:
@@ -67,8 +69,16 @@ async def download_artifacts(config, result):
             data = response.content
             if len(data) != entry['size'] or hashlib.sha256(data).hexdigest() != entry['sha256']:
                 raise ValueError('Downloaded artifact integrity failure')
-            target.parent.mkdir(exist_ok=True)
-            target.write_bytes(data)
+            target.parent.mkdir(exist_ok=True, mode=0o700)
+            with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as staging:
+                temp = Path(staging.name)
+                try:
+                    staging.write(data)
+                    staging.flush()
+                    os.fsync(staging.fileno())
+                    os.replace(temp, target)
+                finally:
+                    temp.unlink(missing_ok=True)
             paths.append(str(target))
     return {'job_id': job_id, 'slide_count': result['slide_count'], 'file_status': 'PASSED',
             'content_status': 'NOT_REVIEWED', 'local_files': paths}

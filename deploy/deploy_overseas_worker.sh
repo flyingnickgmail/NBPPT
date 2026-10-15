@@ -8,6 +8,8 @@
 #      + Human Jitter + Persistent Non-Root User Device Fingerprint)
 # ==============================================================================
 set -euo pipefail
+echo "Legacy installer disabled: use deploy/production/README.md for isolated production deployment." >&2
+exit 1
 
 APP_DIR="/opt/personal-agent-worker"
 WORKER_PORT="${WORKER_PORT:-8001}"

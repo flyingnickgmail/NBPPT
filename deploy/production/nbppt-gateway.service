@@ -1,0 +1,29 @@
+[Unit]
+Description=NBPPT authenticated gateway
+After=network-online.target nbppt-worker.service
+Wants=network-online.target
+[Service]
+User=nbppt-gateway
+Group=nbppt-artifacts
+WorkingDirectory=/opt/NBPPT
+EnvironmentFile=/etc/nbppt/gateway.env
+Environment=HOME=/var/lib/nbppt-gateway
+ExecStart=/opt/NBPPT/.venv/bin/uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/opt/NBPPT/workspace/data /var/lib/nbppt-gateway
+InaccessiblePaths=/var/lib/nbppt-worker /etc/nbppt
+MemoryMax=768M
+TasksMax=128
+[Install]
+WantedBy=multi-user.target

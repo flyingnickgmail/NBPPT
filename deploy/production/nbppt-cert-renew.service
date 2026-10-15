@@ -1,0 +1,5 @@
+[Unit]
+Description=Renew NBPPT IP TLS certificate
+[Service]
+Type=oneshot
+ExecStart=/opt/nbppt-certbot/bin/certbot renew --quiet --deploy-hook "/usr/sbin/nginx -s reload"

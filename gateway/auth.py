@@ -30,7 +30,7 @@ async def authenticate_key(billing, key: str) -> dict:
     async with aiosqlite.connect(billing.db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT k.api_key, u.id AS user_id, u.tier FROM mcp_api_keys k JOIN users u ON u.id=k.user_id WHERE k.api_key=? AND k.is_active=1", (key,)
+            "SELECT k.api_key, u.id AS user_id, CASE WHEN k.scope='admin' THEN u.tier ELSE 'studio' END AS tier, k.scope FROM mcp_api_keys k JOIN users u ON u.id=k.user_id WHERE k.api_key=? AND k.is_active=1", (key,)
         ) as cur:
             row = await cur.fetchone()
     if not row:

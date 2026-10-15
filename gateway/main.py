@@ -84,7 +84,7 @@ async def access_control(request: Request, call_next):
     try:
         if protected and not (path == "/api/session" and request.method == "POST"):
             request.state.principal = await authenticate_request(billing, request)
-            if path.startswith("/api/settings/") or path in ("/api/health/details", "/api/wallet/topup"):
+            if path.startswith("/api/settings/") or path in ("/api/health/details", "/api/wallet/topup", "/api/wallet/keys", "/api/wallet/keys/revoke"):
                 if request.state.principal["tier"] != "admin":
                     raise HTTPException(403, "Administrator required")
         response = await call_next(request)
@@ -126,10 +126,10 @@ async def logout(request: Request):
 
 
 class CreateJobRequest(BaseModel):
-    prompt_cn: str
+    prompt_cn: str = Field(min_length=1, max_length=100000)
     task_type: str = "ppt"  # "ppt", "video", "composite"
     template_id: str = "auto"  # "auto", "gorden:mckinsey-style", "frontend-slides", "ppt-master", "yonyou-ci-bg", etc.
-    slide_count: int = Field(default=0, ge=0, le=100)
+    slide_count: int = Field(default=0, ge=0, le=60)
     visual_style: str = "executive-dark"
     duration_seconds: int = 9
     aspect_ratio: str = "16:9"
@@ -295,6 +295,18 @@ async def create_key(req: CreateKeyRequest, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class RevokeKeyRequest(BaseModel):
+    key_id: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+@app.post('/api/wallet/keys/revoke')
+async def revoke_key(req: RevokeKeyRequest, request: Request):
+    try:
+        return await billing.revoke_api_key(request.state.principal, req.key_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.get("/api/jobs")
 async def get_recent_jobs(request: Request, limit: int = 12):
     jobs = await billing.list_jobs(request.state.principal["user_id"], limit=limit)
@@ -303,6 +315,8 @@ async def get_recent_jobs(request: Request, limit: int = 12):
 
 @app.post("/api/jobs/stream")
 async def stream_create_job(req: CreateJobRequest, request: Request):
+    if os.getenv('NBPPT_REQUIRE_ISOLATION', 'false').lower() == 'true' and (req.task_type != 'ppt' or req.execution_mode not in ('auto', 'codex_cli')):
+        raise HTTPException(422, '当前部署仅开放隔离运行的 Codex PPT 生成')
     api_key = request.state.principal["api_key"]
     task_type = req.task_type if req.task_type in TASK_FREEZE_CREDITS else "ppt"
     freeze_amount = TASK_FREEZE_CREDITS[task_type]
@@ -464,7 +478,8 @@ async def serve_job_artifact(job_id: str, file_path: str, request: Request):
         if entry is None:
             raise ValueError("Not published")
         target = contained_file(root, file_path)
-        if target.stat().st_size != entry["size"] or hashlib.sha256(target.read_bytes()).hexdigest() != entry["sha256"]:
+        digest = await asyncio.to_thread(lambda: hashlib.sha256(target.read_bytes()).hexdigest())
+        if target.stat().st_size != entry["size"] or digest != entry["sha256"]:
             raise ValueError("Artifact changed after verification")
     except (ValueError, OSError, KeyError):
         raise HTTPException(404, "Artifact not found")

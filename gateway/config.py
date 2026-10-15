@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env"
-load_dotenv(ENV_FILE)
+if os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() != "true":
+    load_dotenv(ENV_FILE)
 
 GATEWAY_HOST = os.getenv("GATEWAY_HOST", "127.0.0.1")
 GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8000"))

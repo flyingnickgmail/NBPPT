@@ -15,6 +15,7 @@ from pptx import Presentation
 from pptx.util import Inches
 
 from gateway.delivery import inspect_delivery, delivery_urls, safe_job_id
+from worker.isolation import isolated_command
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED_SKILL = ROOT / "worker" / "skills" / "source-image-deck" / "SKILL.md"
@@ -212,12 +213,13 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore):
                 env.update({k: proxy for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")})
             cmd = [codex_bin, "exec", "-m", "gpt-6-astra", "-c", 'model_reasoning_effort="high"']
             config = Path.home() / ".codex/config.toml"
-            if config.is_file():
+            if config.is_file() and os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() != "true":
                 for name in tomllib.loads(config.read_text()).get("mcp_servers", {}):
                     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                         raise ValueError("MCP 配置名称包含不支持的字符，请为执行节点使用独立配置")
                     cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
             cmd += ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt]
+            cmd, _ = isolated_command(cmd, job_dir, skill_references(spec.get("matched_template", {})))
             timeout = max(1800, (spec["slide_count"] or 15) * 180)
             started = time.monotonic()
             with (job_dir / "codex_exec.log").open("wb") as log:

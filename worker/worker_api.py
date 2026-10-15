@@ -42,7 +42,8 @@ from gateway.delivery import inspect_delivery, delivery_urls, safe_job_id
 from pptx.util import Inches
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+if os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() != "true":
+    load_dotenv(BASE_DIR / ".env")
 SKILLS_ROOT = BASE_DIR / "worker" / "agent_skills" / ".claude" / "skills"
 WORKSPACE_JOBS_DIR = BASE_DIR / "workspace" / "jobs"
 WORKSPACE_JOBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -376,6 +377,8 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             media_type="text/event-stream",
         )
 
+    if os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() == "true":
+        raise HTTPException(422, "Production currently supports isolated Codex PPT generation only")
     job_dir = WORKSPACE_JOBS_DIR / req.job_id
     try:
         job_dir.mkdir(exist_ok=False)

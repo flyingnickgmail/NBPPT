@@ -4,6 +4,8 @@ Uses async SQLite out-of-the-box so the entire billing lifecycle works locally w
 while matching the exact schema of sql/init_postgres_schema.sql.
 """
 import json
+import asyncio
+import hashlib
 import secrets
 import uuid
 import os
@@ -84,6 +86,10 @@ class BillingManager:
                 columns = {row[1] for row in await cur.fetchall()}
             if "request_hash" not in columns:
                 await db.execute("ALTER TABLE media_jobs ADD COLUMN request_hash TEXT")
+            async with db.execute("PRAGMA table_info(mcp_api_keys)") as cur:
+                key_columns = {row[1] for row in await cur.fetchall()}
+            if 'scope' not in key_columns:
+                await db.execute("ALTER TABLE mcp_api_keys ADD COLUMN scope TEXT NOT NULL DEFAULT 'generate'")
             await db.execute("CREATE TABLE IF NOT EXISTS web_sessions (token_hash TEXT PRIMARY KEY, api_key TEXT NOT NULL, expires_at REAL NOT NULL)")
             # Never re-enable the historically public demo credential.
             await db.execute("UPDATE mcp_api_keys SET is_active = 0 WHERE api_key = ?", (DEFAULT_DEMO_API_KEY,))
@@ -110,6 +116,8 @@ class BillingManager:
             elif row and bootstrap_key:
                 await db.execute("UPDATE users SET tier = 'admin' WHERE id = ?", (row[0],))
                 await db.execute("INSERT OR IGNORE INTO mcp_api_keys (api_key,user_id,name,created_at) VALUES (?,?,?,?)", (bootstrap_key,row[0],"管理员初始密钥",now_iso()))
+            if bootstrap_key:
+                await db.execute("UPDATE mcp_api_keys SET scope='admin' WHERE api_key=?", (bootstrap_key,))
             await db.commit()
         self._initialized = True
 
@@ -134,11 +142,12 @@ class BillingManager:
 
             user_id = user_row["user_id"]
             async with db.execute(
-                "SELECT api_key, name, daily_credit_limit, is_active, created_at FROM mcp_api_keys WHERE user_id = ? ORDER BY created_at DESC",
+                "SELECT api_key, name, scope, daily_credit_limit, is_active, created_at FROM mcp_api_keys WHERE user_id = ? ORDER BY created_at DESC",
                 (user_id,),
             ) as cur:
                 keys = [dict(r) for r in await cur.fetchall()]
                 for key in keys:
+                    key["key_id"] = hashlib.sha256(key["api_key"].encode()).hexdigest()
                     key["api_key"] = "***" + key["api_key"][-4:]
 
             async with db.execute(
@@ -185,7 +194,7 @@ class BillingManager:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT user_id FROM mcp_api_keys WHERE api_key = ? AND is_active = 1", (current_api_key,)
+                "SELECT k.user_id FROM mcp_api_keys k JOIN users u ON k.user_id=u.id WHERE k.api_key=? AND k.is_active=1 AND k.scope='admin' AND u.tier='admin'", (current_api_key,)
             ) as cur:
                 row = await cur.fetchone()
             if not row:
@@ -199,6 +208,22 @@ class BillingManager:
             await db.commit()
             return {"api_key": new_key, "name": key_name, "created_at": ts}
 
+    async def revoke_api_key(self, principal, key_id):
+        if principal['tier'] != 'admin':
+            raise PermissionError('Administrator required')
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute('SELECT api_key FROM mcp_api_keys WHERE user_id=?', (principal['user_id'],)) as cur:
+                keys = await cur.fetchall()
+            key = next((r[0] for r in keys if hashlib.sha256(r[0].encode()).hexdigest() == key_id), None)
+            if key is None:
+                raise ValueError('Key not found')
+            if key == principal['api_key']:
+                raise ValueError('Cannot revoke the current administrator credential')
+            await db.execute('UPDATE mcp_api_keys SET is_active=0 WHERE api_key=?', (key,))
+            await db.execute('DELETE FROM web_sessions WHERE api_key=?', (key,))
+            await db.commit()
+        return {'revoked': True}
+
     async def try_freeze_credits(
         self, api_key: str, job_id: str, task_type: str, cn_prompt: str, freeze_amount: int, request_hash: str | None = None
     ) -> Dict[str, Any]:
@@ -211,7 +236,7 @@ class BillingManager:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT u.id as user_id, u.credits_available, u.credits_frozen, u.tier
+                SELECT u.id as user_id, u.credits_available, u.credits_frozen, u.tier, k.daily_credit_limit
                 FROM mcp_api_keys k
                 JOIN users u ON k.user_id = u.id
                 WHERE k.api_key = ? AND k.is_active = 1
@@ -221,6 +246,15 @@ class BillingManager:
                 row = await cur.fetchone()
             if not row:
                 raise PermissionError("无效或已停用的 MCP API Key")
+            async with db.execute("SELECT count(*), sum(user_id=?) FROM media_jobs WHERE status='RUNNING'", (row['user_id'],)) as cur:
+                total, owned = await cur.fetchone()
+            if total >= int(os.getenv('NBPPT_MAX_RUNNING', '8')) or (owned or 0) >= int(os.getenv('NBPPT_MAX_USER_RUNNING', '2')):
+                raise ValueError('生成队列已满，请等待现有任务完成')
+            daily_limit = min(row['daily_credit_limit'], int(os.getenv('NBPPT_DAILY_CREDITS', '1200')))
+            async with db.execute("SELECT coalesce(sum(-amount),0) FROM credit_ledger WHERE user_id=? AND action='FREEZE' AND substr(created_at,1,10)=?", (row['user_id'], now_iso()[:10])) as cur:
+                spent = (await cur.fetchone())[0]
+            if spent + freeze_amount > daily_limit:
+                raise ValueError('今日生成额度已用完；失败请求也计入尝试额度')
             if row["credits_available"] < freeze_amount:
                 raise ValueError(
                     f"账户可用算力点不足（当前可用: {row['credits_available']} 点，本次任务需预冻结: {freeze_amount} 点），请先点击右上角充值。"
@@ -270,6 +304,16 @@ class BillingManager:
         await self.initialize()
         if not math.isfinite(actual_cost_usd) or actual_cost_usd < 0:
             raise ValueError("Invalid cost")
+        # Validate large files off the event loop and before taking the write lock.
+        async with aiosqlite.connect(self.db_path) as preflight:
+            preflight.row_factory = aiosqlite.Row
+            async with preflight.execute("SELECT * FROM media_jobs WHERE job_id=?", (job_id,)) as cur:
+                checked = await cur.fetchone()
+        if checked and checked["status"] == "RUNNING":
+            manifest = await asyncio.to_thread(verify_published, job_id, checked["task_type"],
+                json.loads(checked["en_compiled_spec"] or "{}"), self.jobs_root / job_id / "output")
+            if cdn_urls != delivery_urls(job_id, manifest):
+                raise ValueError("Delivery URLs do not match verified files")
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             db.row_factory = aiosqlite.Row
@@ -286,9 +330,8 @@ class BillingManager:
                         "overseas_cost_usd": job["overseas_cost_usd"]}
             if job["status"] != "RUNNING":
                 raise ValueError("Job is not eligible for settlement")
-            manifest = verify_published(job_id, job["task_type"], json.loads(job["en_compiled_spec"] or "{}"), self.jobs_root / job_id / "output")
-            if cdn_urls != delivery_urls(job_id, manifest):
-                raise ValueError("Delivery URLs do not match verified files")
+            if not checked or checked["status"] != "RUNNING" or checked["en_compiled_spec"] != job["en_compiled_spec"]:
+                raise ValueError("Job changed during delivery verification")
 
             frozen = int(job["credits_frozen"])
             # Dynamic formula: min(frozen, max(int(frozen * 0.7), int(actual_cost_usd * 300)))
