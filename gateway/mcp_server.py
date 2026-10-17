@@ -40,6 +40,7 @@ class PresentationJobs:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def create(self, principal, source, template_id, slide_count, request_id):
+        self._require_scope(principal, write=True)
         if not source.strip() or len(source) > 100000 or not 0 <= slide_count <= 60:
             raise ValueError("原文不能为空且最多10万字；页数须为0（自动）或1–60")
         if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
@@ -57,24 +58,40 @@ class PresentationJobs:
                     if existing.get('request_hash') != fingerprint:
                         raise ValueError("request_id已用于不同内容，请为新任务选择新编号")
                     return await self.status(principal, job_id)
-                await self.billing.try_freeze_credits(principal['api_key'], job_id, 'ppt', source,
-                                                     TASK_FREEZE_CREDITS['ppt'], request_hash=fingerprint)
-                self.progress[job_id] = {"percent": 0, "message": "已接收，等待生成"}
-                self.track(self.execute(job_id, arguments))
-                return {"job_id": job_id, "status": "RUNNING", "poll_after_seconds": 30,
-                        "message": "任务已提交，使用get_job_status查询；不要重复创建任务。"}
+                handed_off = False
+                try:
+                    await self.billing.try_freeze_credits(principal['api_key'], job_id, 'ppt', source,
+                                                         TASK_FREEZE_CREDITS['ppt'], request_hash=fingerprint)
+                    # Persist the original request before compilation so a failed compile can be retried.
+                    await self.billing.save_compiled_spec(job_id, {"_request": arguments})
+                    self.progress[job_id] = {"percent": 0, "stage": "queued", "message": "已接收，等待生成"}
+                    self.track(self.execute(job_id, arguments))
+                    handed_off = True
+                    return {"job_id": job_id, "status": "RUNNING", "poll_after_seconds": 30,
+                            "message": "任务已提交，使用get_job_status查询；不要重复创建任务。"}
+                except asyncio.CancelledError:
+                    if not handed_off:
+                        await asyncio.shield(self.billing.cancel_refund(job_id, "Gateway stopped during admission"))
+                    raise
+                except Exception:
+                    if not handed_off:
+                        await self.billing.cancel_refund(job_id, "Failed to persist generation request")
+                    raise
         # A closed MCP request cannot abandon a committed reservation.
         return await asyncio.shield(self.track(admit()))
 
     async def execute(self, job_id, arguments):
         try:
+            self.progress[job_id] = {"percent": 10, "stage": "planning", "message": "正在规划内容与逐页结构"}
             runtime = get_runtime_settings()
             spec = await compile_cn_request_to_english_spec(arguments['source'], 'ppt',
                 {"slide_count": arguments['slide_count'], "template_id": arguments['template_id'], "execution_mode": "codex_cli"})
             spec['requested_slide_count'] = arguments['slide_count']
+            spec['_request'] = arguments
             await self.billing.save_compiled_spec(job_id, spec)
+            self.progress[job_id] = {"percent": 25, "stage": "generating", "message": "内容规划完成，正在生成页面"}
             completed = None
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=15), trust_env=False) as client:
                 async with client.stream('POST', runtime['overseas_worker_url'] + '/internal/execute-stream',
                     headers={'X-Worker-Secret': runtime['overseas_worker_secret']},
                     json={'job_id': job_id, 'task_type': 'ppt', 'english_spec': spec,
@@ -89,6 +106,7 @@ class PresentationJobs:
                             raise RuntimeError(event.get('message', 'Worker failed'))
                         if event.get('type') == 'progress':
                             self.progress[job_id] = {'percent': min(99, event.get('pct', 0)),
+                                                     'stage': 'generating',
                                                      'message': event.get('message_cn', '')}
                         if event.get('type') == 'completed':
                             if completed is not None:
@@ -96,8 +114,10 @@ class PresentationJobs:
                             completed = event
             if completed is None:
                 raise ValueError('Worker returned no completed delivery')
+            self.progress[job_id] = {"percent": 96, "stage": "checking", "message": "生成完成，正在严格检查交付文件"}
             actual_spec = validate_direct_completion(completed)
             actual_spec['requested_slide_count'] = arguments['slide_count']
+            actual_spec['_request'] = arguments
             await self.billing.save_compiled_spec(job_id, actual_spec)
             await self.billing.confirm_settle(job_id, float(completed['total_cost_usd']), completed.get('cdn_urls', {}))
         except asyncio.CancelledError:
@@ -109,6 +129,7 @@ class PresentationJobs:
             self.progress.pop(job_id, None)
 
     async def owned_job(self, principal, job_id):
+        self._require_scope(principal, write=False)
         safe_job_id(job_id)
         job = await self.billing.get_job(job_id, principal['user_id'])
         if not job:
@@ -117,16 +138,39 @@ class PresentationJobs:
 
     async def status(self, principal, job_id):
         job = await self.owned_job(principal, job_id)
-        result = {'job_id': job_id, 'status': job['status'], 'credits_charged': job['credits_charged']}
+        result = {'job_id': job_id, 'status': job['status'], 'task_type': job['task_type'],
+                  'credits_charged': job['credits_charged'], 'credits_frozen': job['credits_frozen'],
+                  'created_at': job['created_at'], 'completed_at': job['completed_at']}
+        spec = json.loads(job['en_compiled_spec'] or '{}')
+        request = spec.get('_request')
+        if request:
+            result['request'] = request
         if job['status'] == 'RUNNING':
-            result.update(self.progress.get(job_id, {}))
+            result.update(self.progress.get(job_id, {"percent": 0, "stage": "queued", "message": "任务正在恢复或等待执行"}))
             result['poll_after_seconds'] = 30
         elif job['status'] == 'FAILED':
+            result['stage'] = 'failed'
             result['message'] = '生成或文件验收失败，冻结算力已退回。请联系管理员查看详细日志。'
         elif job['status'] == 'COMPLETED':
             result['percent'] = 100
+            result['stage'] = 'ready'
             result['message'] = '文件检查通过；内容和图片文字仍需人工复核。调用get_job_artifacts获取产物。'
         return result
+
+    async def retry(self, principal, job_id, request_id):
+        self._require_scope(principal, write=True)
+        job = await self.owned_job(principal, job_id)
+        if job['status'] != 'FAILED':
+            raise ValueError('只有失败且已退款的任务可以重试')
+        try:
+            arguments = json.loads(job['en_compiled_spec'] or '{}')['_request']
+        except (KeyError, TypeError, json.JSONDecodeError):
+            raise ValueError('旧任务缺少可重试的原始参数，请重新创建任务')
+        retry_job_id = "ppt_" + hashlib.sha256((principal['user_id'] + ':' + request_id).encode()).hexdigest()[:10]
+        if retry_job_id == job_id:
+            raise ValueError('重试须使用新的request_id；重复提交原request_id只会返回原任务')
+        return await self.create(principal, arguments['source'], arguments['template_id'],
+                                 arguments['slide_count'], request_id)
 
     async def artifacts(self, principal, job_id):
         job = await self.owned_job(principal, job_id)
@@ -137,6 +181,13 @@ class PresentationJobs:
         return {'job_id': job_id, 'file_status': 'PASSED', 'content_status': 'NOT_REVIEWED',
                 'slide_count': manifest['planned_slides'], 'artifacts': delivery_urls(job_id, manifest),
                 'files': manifest['files'], 'download_auth': 'Use the same Bearer credential as MCP; do not put it in URLs.'}
+
+    @staticmethod
+    def _require_scope(principal, write):
+        scope = principal.get('scope', 'generate')
+        allowed = {'admin', 'generate'} if write else {'admin', 'generate', 'read'}
+        if scope not in allowed:
+            raise PermissionError('Credential scope does not allow this operation')
 
 
 def build_mcp(jobs):

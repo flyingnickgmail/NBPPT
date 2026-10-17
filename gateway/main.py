@@ -19,6 +19,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from gateway.config import (
@@ -114,7 +115,9 @@ async def login(req: LoginRequest, request: Request):
 
 @app.get("/api/session")
 async def session_info(request: Request):
+    scope = request.state.principal.get("scope", "generate")
     return {"user_id": request.state.principal["user_id"], "admin": request.state.principal["tier"] == "admin",
+            "scope": scope, "can_generate": scope in {"admin", "generate"},
             "ppt_only": os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() == "true"}
 
 
@@ -136,6 +139,17 @@ class CreateJobRequest(BaseModel):
     aspect_ratio: str = "16:9"
     master_reasoning_engine: str = "auto"  # "auto", "codex_login", "claude_login", "deepseek_api"
     execution_mode: str = "auto"
+
+
+class AsyncCreateJobRequest(BaseModel):
+    source: str = Field(min_length=1, max_length=100000)
+    template_id: str = "auto"
+    slide_count: int = Field(default=0, ge=0, le=60)
+    request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,80}$")
+
+
+class RetryJobRequest(BaseModel):
+    request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,80}$")
 
 
 class TopupRequest(BaseModel):
@@ -178,6 +192,22 @@ async def get_templates():
         "skills": list_installed_ppt_skills(),
         "templates": list_available_templates(),
     }
+
+
+def production_capabilities():
+    return {
+        "ppt": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"],
+                "progress": True, "preview_after_validation": True, "retry": True},
+        "video": {"supported": False, "freeze_credits": TASK_FREEZE_CREDITS.get("video"),
+                  "progress": False, "preview_after_validation": False, "retry": False},
+        "composite": {"supported": False, "freeze_credits": TASK_FREEZE_CREDITS.get("composite"),
+                      "progress": False, "preview_after_validation": False, "retry": False},
+    }
+
+
+@app.get("/api/capabilities")
+async def get_capabilities(request: Request):
+    return {"delivery_modes": production_capabilities(), "partial_preview": False}
 
 
 @app.get("/api/gorden-preview/{slug}")
@@ -310,12 +340,67 @@ async def revoke_key(req: RevokeKeyRequest, request: Request):
 
 @app.get("/api/jobs")
 async def get_recent_jobs(request: Request, limit: int = 12):
+    if request.state.principal.get("scope", "generate") not in {"admin", "generate", "read"}:
+        raise HTTPException(403, "Credential scope does not allow reading jobs")
     jobs = await billing.list_jobs(request.state.principal["user_id"], limit=limit)
     return {"jobs": jobs}
 
 
+def job_error(exc: Exception, *, conflict: bool = False):
+    if isinstance(exc, PermissionError):
+        raise HTTPException(403, str(exc))
+    raise HTTPException(409 if conflict else 422, str(exc))
+
+
+@app.post("/api/jobs")
+async def create_job(req: AsyncCreateJobRequest, request: Request):
+    try:
+        return await mcp_jobs.create(request.state.principal, req.source, req.template_id,
+                                     req.slide_count, req.request_id)
+    except (ValueError, PermissionError) as exc:
+        job_error(exc, conflict="request_id已用于" in str(exc))
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str, request: Request):
+    try:
+        return await mcp_jobs.status(request.state.principal, job_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/api/jobs/{job_id}/artifacts")
+async def get_job_artifacts(job_id: str, request: Request):
+    try:
+        return await mcp_jobs.artifacts(request.state.principal, job_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        code = 409 if "尚未成功完成" in str(exc) else 404
+        raise HTTPException(code, str(exc))
+
+
+@app.post("/api/jobs/{job_id}/retry")
+async def retry_job(job_id: str, req: RetryJobRequest, request: Request):
+    try:
+        return await mcp_jobs.retry(request.state.principal, job_id, req.request_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        message = str(exc)
+        if "不存在或无权访问" in message:
+            raise HTTPException(404, message)
+        if "只有失败" in message or "新的request_id" in message or "缺少可重试" in message:
+            raise HTTPException(409, message)
+        raise HTTPException(422, message)
+
+
 @app.post("/api/jobs/stream")
 async def stream_create_job(req: CreateJobRequest, request: Request):
+    if request.state.principal.get("scope", "generate") not in {"admin", "generate"}:
+        raise HTTPException(403, "Credential scope does not allow generation")
     if os.getenv('NBPPT_REQUIRE_ISOLATION', 'false').lower() == 'true' and (req.task_type != 'ppt' or req.execution_mode not in ('auto', 'codex_cli')):
         raise HTTPException(422, '当前部署仅开放隔离运行的 Codex PPT 生成')
     api_key = request.state.principal["api_key"]
@@ -503,4 +588,5 @@ async def serve_job_artifact(job_id: str, file_path: str, request: Request):
 
 
 # Mount after application routes; SDK handles initialization, notifications and transport.
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/", mcp_app)
