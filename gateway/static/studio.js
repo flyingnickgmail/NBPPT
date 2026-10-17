@@ -101,7 +101,7 @@ function openJob(id) {
   $('ppt-panel').hidden = true; $('preview-empty').hidden = false; $('preview-context').textContent = '';
   $('task-summary').textContent = id; $('request-source').textContent = ''; $('request-config').textContent = ''; $('retry-ppt').hidden = true; $('ppt-progress').textContent = '正在获取真实状态…';
   $('task-state').textContent = '同步中'; $('ppt-meter').hidden = false; $('ppt-meter').removeAttribute('value'); $('billing').textContent = '';
-  showTask(); $('task-title').focus(); poll();
+  showTask(); $('task-title').focus(); refreshWallet().catch(() => {}); poll();
 }
 async function refreshWallet() { const authEpoch = epoch; const data = await api('/api/wallet'); if (authEpoch !== epoch || !authenticated) return; $('wallet').textContent = `可用 ${data.user.credits_available} 点`; }
 async function initialize() {

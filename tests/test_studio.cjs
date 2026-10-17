@@ -9,7 +9,7 @@ function harness(fetch) {
  const get=id=>{if(!nodes.has(id)) nodes.set(id,element());return nodes.get(id)};
  const ctx=vm.createContext({document:{getElementById:get,createElement:element},sessionStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},fetch,URL,Option:class{},crypto:webcrypto,TextEncoder,Uint8Array,location:{origin:'http://test'},setTimeout:fn=>{timers.add(fn);return fn},clearTimeout:fn=>timers.delete(fn)});
  let source=fs.readFileSync('gateway/static/studio.js','utf8'); source=source.slice(0,source.lastIndexOf('initialize().catch'));
- vm.runInContext(source+';globalThis.testApi={poll,api,controls,clearSession,initialize,set(s){authenticated=s.auth??true;canGenerate=s.canGenerate??true;ready=true;active=s.active??"ppt_0123456789";userId="a";artifacts=s.artifacts??null},get(){return {active,authenticated,ready}}};',ctx);
+ vm.runInContext(source+';globalThis.testApi={poll,api,controls,clearSession,initialize,openJob,set(s){authenticated=s.auth??true;canGenerate=s.canGenerate??true;ready=true;active=s.active??"ppt_0123456789";userId="a";artifacts=s.artifacts??null},get(){return {active,authenticated,ready}}};',ctx);
  return {api:ctx.testApi,get,timers,storage};
 }
 const response=(body,status=200)=>({ok:status<400,status,json:async()=>body});
@@ -52,4 +52,8 @@ test('late initialization cannot restore an explicitly logged-out session',async
 test('retry transport failure preserves idempotency key',async()=>{
  const ids=[];const h=harness(async(path,options)=>{ids.push(JSON.parse(options.body).request_id);throw Error('lost response')});h.api.set({});
  await h.get('retry-ppt').onclick();await h.get('retry-ppt').onclick();assert.equal(ids.length,2);assert.equal(ids[0],ids[1]);assert.equal(h.get('retry-ppt').disabled,false);
+});
+
+test('opening a submitted job refreshes the balance after reservation',async()=>{
+ const h=harness(async path=>response(path==='/api/wallet'?{user:{credits_available:120}}:{status:'RUNNING',stage:'generating',percent:35}));h.api.set({});h.api.openJob('ppt_0123456789');await tick();assert.equal(h.get('wallet').textContent,'可用 120 点');
 });
