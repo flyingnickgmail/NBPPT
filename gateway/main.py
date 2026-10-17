@@ -13,7 +13,7 @@ import os
 import hashlib
 import fcntl
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -146,6 +146,9 @@ class AsyncCreateJobRequest(BaseModel):
     template_id: str = "auto"
     slide_count: int = Field(default=0, ge=0, le=60)
     request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,80}$")
+    task_type: Literal['ppt', 'video'] = 'ppt'
+    video_duration_sec: int = Field(default=30, ge=6, le=60, strict=True)
+    video_aspect_ratio: Literal['16:9', '9:16'] = '16:9'
 
 
 class RetryJobRequest(BaseModel):
@@ -198,16 +201,19 @@ def production_capabilities():
     return {
         "ppt": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"],
                 "progress": True, "preview_after_validation": True, "retry": True},
-        "video": {"supported": False, "freeze_credits": TASK_FREEZE_CREDITS.get("video"),
-                  "progress": False, "preview_after_validation": False, "retry": False},
-        "composite": {"supported": False, "freeze_credits": TASK_FREEZE_CREDITS.get("composite"),
-                      "progress": False, "preview_after_validation": False, "retry": False},
+        "video": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["video"],
+                  "progress": True, "preview_after_validation": True, "retry": True,
+                  "planner_providers": {"codex_cli": True, "claude_cli": False},
+                  "narration": "melo_tts", "duration_range": [6, 60], "aspect_ratios": ["16:9", "9:16"]},
+        "composite": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"] + TASK_FREEZE_CREDITS["video"],
+                      "progress": True, "preview_after_validation": True, "retry": True,
+                      "submission": "independent_jobs"},
     }
 
 
 @app.get("/api/capabilities")
 async def get_capabilities(request: Request):
-    return {"delivery_modes": production_capabilities(), "partial_preview": False}
+    return {"delivery_modes": production_capabilities(), "partial_preview": False, "independent_deliveries": True}
 
 
 @app.get("/api/gorden-preview/{slug}")
@@ -356,7 +362,8 @@ def job_error(exc: Exception, *, conflict: bool = False):
 async def create_job(req: AsyncCreateJobRequest, request: Request):
     try:
         return await mcp_jobs.create(request.state.principal, req.source, req.template_id,
-                                     req.slide_count, req.request_id)
+                                     req.slide_count, req.request_id, req.task_type,
+                                     req.video_duration_sec, req.video_aspect_ratio)
     except (ValueError, PermissionError) as exc:
         job_error(exc, conflict="request_id已用于" in str(exc))
 
@@ -583,6 +590,8 @@ async def serve_job_artifact(job_id: str, file_path: str, request: Request):
         media_type = "video/mp4"
     elif suffix == ".png":
         media_type = "image/png"
+    elif suffix == ".vtt":
+        media_type = "text/vtt; charset=utf-8"
 
     return FileResponse(target, media_type=media_type, headers=headers)
 

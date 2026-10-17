@@ -139,7 +139,7 @@ def test_rest_read_scope_capabilities_and_verified_artifacts(manager, monkeypatc
                 "supported": True, "freeze_credits": 60, "progress": True,
                 "preview_after_validation": True, "retry": True,
             }
-            assert caps.json()["delivery_modes"]["video"]["supported"] is False
+            assert caps.json()["delivery_modes"]["video"]["supported"] is True
             assert caps.json()["partial_preview"] is False
             assert (await client.get(f"/api/jobs/{job_id}", headers=_headers(read_key))).status_code == 200
             artifacts = await client.get(f"/api/jobs/{job_id}/artifacts", headers=_headers(read_key))

@@ -32,18 +32,18 @@
 <span>先讲清内容，</span>
 <span>再让它出彩。</span>
 </h1>
-<p>用完整原文生成演示文稿。整体风格一致，每页各有表达。</p>
+<p>用完整原文生成演示文稿或视频。整体风格一致，每个画面各有表达。</p>
 </div>
 </div>
 <div class="workspace">
 <section id="composer" class="composer">
 <h2>开始创作</h2>
 <div class="mode-picker">
-<button aria-pressed="true">PPT</button>
-<button disabled>视频 · 未开放</button>
-<button disabled>PPT＋视频</button>
+<button id="mode-ppt" type="button" aria-pressed="true">PPT</button>
+<button id="mode-video" type="button" aria-pressed="false" disabled>视频</button>
+<button id="mode-composite" type="button" aria-pressed="false" disabled>PPT＋视频</button>
 </div>
-<p class="note">视频生成尚未开放，本次仅生成 PPT。</p>
+<p class="note">每种成果独立生成和结算；组合任务中某一项失败，不影响另一项预览和下载。</p>
 <form id="brief">
 <div class="input-heading">
 <label for="source">原文与讲述要求</label>
@@ -64,7 +64,8 @@
 <option value="auto">自动匹配</option>
 </select>
 </div>
-<p class="note">模板约束视觉风格，各页按内容选用不同版式。</p>
+<p class="note">模板约束视觉风格，各页或场景按内容选用不同版式。</p>
+<div id="ppt-options">
 <div class="config-row">
 <label for="pages">PPT 页数</label>
 <select id="pages">
@@ -75,6 +76,27 @@
 <option value="12">12 页</option>
 <option value="20">20 页</option>
 </select>
+</div>
+</div>
+<div id="video-options" hidden>
+<div class="config-row">
+<label for="video-duration">视频时长</label>
+<select id="video-duration">
+<option value="6">6 秒</option>
+<option value="15">15 秒</option>
+<option value="30" selected>30 秒</option>
+<option value="45">45 秒</option>
+<option value="60">60 秒</option>
+</select>
+</div>
+<div class="config-row">
+<label for="video-ratio">视频画幅</label>
+<select id="video-ratio">
+<option value="16:9" selected>16:9 横屏</option>
+<option value="9:16">9:16 竖屏</option>
+</select>
+</div>
+<p class="note">视频将在文件验收通过后开放预览。包含离线中文配音与字幕，配音失败不会以静音视频交付。</p>
 </div>
 </details>
 <div class="submit-area">
@@ -120,22 +142,37 @@
 <div class="process">
 <div class="process-heading">
 <h2>生成进度</h2>
+<button id="refresh" class="text-link">刷新状态</button>
 </div>
-<article class="track">
+<div class="process-tracks">
+<article id="ppt-track" class="track">
 <h3>PPT</h3>
-<ol id="phase-steps" class="phase-steps" aria-label="生成阶段"><li>整理内容</li><li>生成页面</li><li>检查文件</li><li>交付审阅</li></ol>
+<ol id="ppt-phase-steps" class="phase-steps" aria-label="PPT 生成阶段"><li>整理内容</li><li>生成页面</li><li>检查文件</li><li>交付审阅</li></ol>
 <p id="ppt-progress" aria-live="polite">
 </p>
-<progress id="ppt-meter" max="100" aria-label="服务器报告进度">
+<progress id="ppt-meter" max="100" aria-label="服务器报告的 PPT 进度">
 </progress>
-<p class="note" id="updated">
-</p>
 <div class="track-actions">
-<button id="refresh" class="text-link">刷新状态</button>
 <button id="retry-ppt" class="retry-button" hidden>重试 PPT</button>
 </div>
+<p id="ppt-billing" class="note">
+</p>
 </article>
-<p id="billing" class="note">
+<article id="video-track" class="track" hidden>
+<h3>视频</h3>
+<ol id="video-phase-steps" class="phase-steps" aria-label="视频生成阶段"><li>整理内容</li><li>生成视频</li><li>检查文件</li><li>交付审阅</li></ol>
+<p id="video-progress" aria-live="polite">
+</p>
+<progress id="video-meter" max="100" aria-label="服务器报告的视频进度">
+</progress>
+<div class="track-actions">
+<button id="retry-video" class="retry-button" hidden>重试视频</button>
+</div>
+<p id="video-billing" class="note">
+</p>
+</article>
+</div>
+<p class="note" id="updated">
 </p>
 <p class="note">任务在服务器继续执行，关闭页面不会取消。预览在文件验收通过后开放。</p>
 </div>
@@ -163,6 +200,17 @@
 <a id="html-deck" target="_blank" rel="noopener">打开网页演示 ↗</a>
 </div>
 <p class="note">文件检查通过；内容、数字和图片文字仍需人工复核。</p>
+</div>
+<div id="video-panel" hidden>
+<div class="video-stage">
+<video id="video-player" controls preload="metadata">
+<track id="video-subtitles" kind="subtitles" srclang="zh" label="中文字幕" default>
+</video>
+</div>
+<div class="exports">
+<a id="video-download" class="secondary" download>下载 MP4 ↓</a>
+</div>
+<p class="note">文件检查通过；请试听中文配音，核对专有名词及内容。</p>
 </div>
 </div>
 </div>

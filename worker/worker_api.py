@@ -371,9 +371,20 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
         raise HTTPException(422, "Unsupported task type")
 
     if req.english_spec.get("generation_contract") == "skill-direct-v1":
+        if req.task_type != "ppt" or not req.job_id.startswith("ppt_"):
+            raise HTTPException(422, "PPT contract requires a PPT job")
         from worker.direct_generation import generate_deck_stream
         return StreamingResponse(
             generate_deck_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE),
+            media_type="text/event-stream",
+        )
+
+    if req.english_spec.get("generation_contract") == "skill-video-v1":
+        if req.task_type != "video" or not req.job_id.startswith("video_"):
+            raise HTTPException(422, "Video contract requires a video job")
+        from worker.video_generation import generate_video_stream
+        return StreamingResponse(
+            generate_video_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE),
             media_type="text/event-stream",
         )
 

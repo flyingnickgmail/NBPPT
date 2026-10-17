@@ -9,6 +9,8 @@ import re
 import subprocess
 import zipfile
 import base64
+from fractions import Fraction
+import html as html_lib
 from html.parser import HTMLParser
 
 from PIL import Image
@@ -112,6 +114,73 @@ def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path
                 width, height = map(int, ratio.split(":"))
                 if abs(streams[0]["width"] / streams[0]["height"] - width / height) > 0.02:
                     raise ValueError("Video aspect ratio mismatch")
+            if spec.get('generation_contract') == 'skill-video-v1':
+                expected_size = (1280, 720) if ratio == '16:9' else (720, 1280)
+                stream = streams[0]
+                if (len(streams) != 1 or (stream['width'], stream['height']) != expected_size
+                    or stream.get('codec_name') != 'h264' or stream.get('pix_fmt') != 'yuv420p'
+                    or Fraction(stream.get('avg_frame_rate', '0')) != 24
+                    or abs(duration - expected_duration) > 1 / 24 + .001
+                    or (spec.get('video_width'), spec.get('video_height')) != expected_size
+                    or spec.get('fps') != 24):
+                    raise ValueError('Video encoding contract mismatch')
+                audio = [s for s in info['streams'] if s.get('codec_type') == 'audio']
+                if type(spec.get('video_audio')) is not bool or bool(audio) != spec['video_audio']:
+                    raise ValueError('Audio metadata mismatch')
+                narration = spec.get('narration', {})
+                if spec.get('video_narration') is True and (not audio or narration.get('status') != 'generated'):
+                    raise ValueError('Requested narration was not delivered')
+                if audio and (len(audio) != 1 or audio[0].get('codec_name') != 'aac'
+                              or abs(float(audio[0].get('duration', 0)) - expected_duration) > .05):
+                    raise ValueError('Audio encoding or duration mismatch')
+                # Decode every frame: a valid header alone does not prove a playable file.
+                subprocess.run(['ffmpeg', '-v', 'error', '-xerror', '-nostdin', '-threads', '2',
+                                '-i', str(video), '-f', 'null', '-'],
+                               capture_output=True, timeout=120, check=True)
+                poster = contained_file(root, 'assets/video_poster.png')
+                with Image.open(poster) as im:
+                    im.load()
+                    if im.format != 'PNG' or im.size != expected_size:
+                        raise ValueError('Video poster size mismatch')
+                captions = contained_file(root, 'subtitles.vtt')
+                scenes = spec.get('video_scenes')
+                if not isinstance(scenes, list) or not 1 <= len(scenes) <= 10:
+                    raise ValueError('Missing storyboard')
+                cursor = 0
+                expected_cues = []
+                def stamp(seconds):
+                    millis = round(seconds * 1000)
+                    return f'{millis // 3600000:02}:{millis % 3600000 // 60000:02}:{millis % 60000 // 1000:02}.{millis % 1000:03}'
+                speech_scenes = narration.get('scenes', [])
+                if audio and len(speech_scenes) != len(scenes):
+                    raise ValueError('Missing per-scene narration evidence')
+                for index, scene in enumerate(scenes):
+                    length = scene['duration_sec']
+                    if type(length) is not int or length < 3:
+                        raise ValueError('Invalid scene duration')
+                    end = cursor + length
+                    cue_end = end
+                    if audio:
+                        speech = speech_scenes[index]
+                        spoken = speech.get('speech_duration_sec', 0)
+                        if speech.get('scene_num') != index + 1 or not 0 < spoken <= length or not 1 <= speech.get('speed', 0) <= 1.2:
+                            raise ValueError('Narration timing exceeds scene')
+                        cue_end = cursor + spoken
+                    expected_cues.append(f'{stamp(cursor)} --> {stamp(cue_end)}')
+                    cursor = end
+                text = captions.read_text(encoding='utf-8')
+                cues = re.findall(r'^\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}$', text, re.M)
+                if not text.startswith('WEBVTT\n') or cues != expected_cues or cursor != expected_duration:
+                    raise ValueError('Subtitles must cover every scene exactly')
+                # Each cue must contain its corresponding visible content, with no empty scene.
+                blocks = text.strip().split('\n\n')[1:]
+                if len(blocks) != len(scenes):
+                    raise ValueError('Subtitle scene count mismatch')
+                for block, scene in zip(blocks, scenes):
+                    expected_text = scene.get('narration') if audio else scene['title'] + '\n' + scene['body']
+                    if not expected_text or expected_text not in html_lib.unescape(block):
+                        raise ValueError('Subtitle content differs from storyboard')
+                files.extend([poster, captions])
         except Exception as exc:
             raise DeliveryError("Video cannot be validated; ffprobe and valid media are required") from exc
         files.append(video)
@@ -141,6 +210,8 @@ def delivery_urls(job_id: str, manifest: dict) -> dict:
         "pptx_url": next((base + p for p in paths if p.endswith(".pptx")), None),
         "html_deck_url": next((base + p for p in paths if p.endswith(".html")), None),
         "mp4_url": next((base + p for p in paths if p.endswith(".mp4")), None),
+        "video_poster_url": base + 'assets/video_poster.png' if 'assets/video_poster.png' in paths else None,
+        "subtitles_url": base + 'subtitles.vtt' if 'subtitles.vtt' in paths else None,
         "slide_preview_urls": [base + f"assets/slide_preview_{i}.png" for i in range(1, manifest["planned_slides"] + 1)],
         "chart_urls": [], "keyframe_urls": [],
     }
