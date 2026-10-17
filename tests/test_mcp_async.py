@@ -134,7 +134,7 @@ def test_real_sdk_handshake_tools_and_validation(live_mcp):
     async def scenario():
         async with remote_client(config) as client:
             tools = await client.list_tools()
-            assert {t.name for t in tools.tools} == {'list_templates', 'create_presentation', 'get_job_status', 'get_job_artifacts'}
+            assert {t.name for t in tools.tools} == {'list_templates', 'create_presentation', 'create_video', 'retry_job', 'get_job_status', 'get_job_artifacts'}
             templates = await client.call_tool('list_templates', {})
             assert not templates.is_error
             result = await client.call_tool('create_presentation', {'source':'test', 'request_id':'bad', 'slide_count':2})
@@ -182,14 +182,15 @@ def test_real_client_submit_disconnect_retry(live_mcp, monkeypatch, manager):
         release.set()
 
 
-def test_download_integrity_and_path_boundary(tmp_path, monkeypatch):
+@pytest.mark.parametrize("kind,suffix", [("ppt", "_deck.pptx"), ("video", "_video.mp4"), ("video", "/assets/video_poster.png"), ("video", "/subtitles.vtt")])
+def test_download_integrity_and_path_boundary(tmp_path, monkeypatch, kind, suffix):
     import hashlib
     import httpx
     from clients import nbppt_mcp as adapter
-    job = 'ppt_1234567890'
+    job = kind + '_1234567890'
     config = {'url': 'http://127.0.0.1:1234/mcp', 'api_key': KEY_A, 'download_dir': str(tmp_path)}
     result = {'job_id': job, 'slide_count': 2,
-              'files': [{'path': job+'_deck.pptx', 'size': 4, 'sha256': hashlib.sha256(b'data').hexdigest()}]}
+              'files': [{'path': suffix[1:] if suffix.startswith('/') else job+suffix, 'size': 4, 'sha256': hashlib.sha256(b'data').hexdigest()}]}
     real = httpx.AsyncClient
     def handler(request):
         assert request.headers['Authorization'] == 'Bearer '+KEY_A

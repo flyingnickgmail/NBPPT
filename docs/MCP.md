@@ -1,6 +1,6 @@
 # NBPPT 异步 MCP
 
-完整原文和客户风格 → MCP 提交任务 → Codex 按技能规划、逐页生成 → 文件验收、结算 → 客户端下载 PPTX/HTML/PNG。
+完整原文和客户风格 → MCP 提交独立任务 → Codex 按技能规划和生成 → 文件验收、结算 → 客户端下载 PPTX/HTML/PNG 或中文配音 MP4/海报/VTT。
 客户模板约束品牌风格，不固定每页布局；文件通过不表示内容事实或图片中文字已通过独立终审。
 
 ## 接口
@@ -11,6 +11,8 @@
 | --- | --- |
 | `list_templates` | 列出品牌风格参考，不暴露主机文件路径 |
 | `create_presentation` | `source` 完整原文、`request_id` 幂等编号、`template_id`、`slide_count`；立即返回任务编号 |
+| `create_video` | `source`、`request_id`、`template_id`、`duration_seconds`（6–60）、`aspect_ratio`（16:9或9:16）；中文讲解MP4、旁白和字幕 |
+| `retry_job` | 对自己失败且已退款的 PPT/视频，以新的 `request_id` 重试；不会重做组合任务中另一项 |
 | `get_job_status` | 查询当前用户的进度，运行中建议间隔30秒 |
 | `get_job_artifacts` | 完成后重新检查摘要，返回文件列表、下载路径 |
 
@@ -54,8 +56,8 @@ python -m uvicorn worker.worker_api:app --host 127.0.0.1 --port 18781
 
 测试覆盖正式 SDK 握手和工具调用、提交后断开、并发重试仅一次冻结、越权读取、失败退款、交付文件损坏、下载摘要和路径边界。真实试跑需另外检查全部页面内容与布局。
 
-- 现有生成执行器仍使用已登录 CLI 和较高主机权限；仅允许可信人员和内容使用。接入鉴权不等于进程隔离。不要直接将该执行器开放给不可信公网用户。
-- 当前账单按页面估算，非模型供应商实际计费。没有完整的商业配额、全局排队限额或多实例调度。
+- 生产执行器必须启用非 root Linux/bubblewrap 隔离，只暴露本任务及指定技能；不能把未启用隔离的本地调试运行方式用于公网。
+- 当前账单按页面或视频时长估算，非模型供应商实际计费。已有单机队列上限、用户并发和日冻结额度，不支持多实例调度。
 - 下载 HTML 已嵌入图片，网页服务增加隔离策略；历史无 manifest 的产物不会自动公开，需独立验证迁移。
 - 这份代码与本地验收不表示线上部署完成；公网 HTTPS、权限切换、旧链接迁移需作为明确发布工作验证。
 
@@ -67,3 +69,5 @@ macOS：70项通过。Linux/Python3.12：69项通过，1项真实视频检查因
 
 
 生产发布与隔离配置见 [deploy/production/README.md](../deploy/production/README.md)。公网仅允许 HTTPS；普通生成密钥不能访问管理接口，支持撤销。
+
+视频体系、技能许可与试验记录见 [VIDEO_PRODUCTION.md](VIDEO_PRODUCTION.md)。`create_video` 固定要求中文配音，未配置时失败退款。Claude 规划接口保留但未开放生产；不得向客户声称已由 Claude 生成。

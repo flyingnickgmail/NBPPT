@@ -1,6 +1,6 @@
 # NBPPT 单机生产部署
 
-适用 Ubuntu 24.04；本机网关 + 单账号执行节点。仅开放 Codex PPT 路径。
+适用 Ubuntu 24.04；本机网关 + 单账号执行节点。开放隔离 Codex PPT 与原文驱动中文讲解视频；两种产物独立任务、冻结和结算。
 
 ## 发布前
 
@@ -21,7 +21,7 @@
 
 Ubuntu 24.04 安装 `nbppt-bwrap.apparmor` 至 `/etc/apparmor.d/nbppt-bwrap` 并用 `apparmor_parser -r` 加载。只允许 bwrap 创建用户命名空间，不关闭系统全局保护。必须以服务账号及 systemd 安全参数实测隔离：仅本任务可写，看不到其他任务、数据库、root HOME、服务器配置；缺失隔离条件必须失败。
 
-执行进程仍需要读取它自己的 Codex OAuth 登录并联网生成图片。这是单账号服务，不宣称能防账号封禁或隔离同一账号的供应商风险；隔离不是网络出口白名单。任务原文不是执行指令。公共发布不支持旧 Claude/视频路径。
+执行进程仍需要读取它自己的 Codex OAuth 登录并联网生成图片。这是单账号服务，不宣称能防账号封禁或隔离同一账号的供应商风险；隔离不是网络出口白名单。任务原文不是执行指令。公共发布不支持旧 Claude/即梦模板视频路径。新视频使用 skill-video-v1：Codex 仅输出受限分镜 JSON，可信 Pillow/FFmpeg 渲染，MeloTTS 离线中文配音。Claude 规划适配接口保留但明确拒绝未验证的隔离执行，不静默回退。
 
 ## HTTPS 与更新
 
@@ -39,3 +39,11 @@ Certbot >=5.4 支持 IP 证书。使用 webroot + shortlived profile 为服务�
 客户端使用普通 generate 密钥；禁止下发管理员密钥。管理员创建的客户端密钥不会继承管理权限，管理员可经 `/api/wallet/keys/revoke` 按 key_id 撤销。不同客户必须使用不同用户账号，密钥本身不是租户边界。同一用户的多个密钥共享任务和余额。
 
 文件验收 PASSED 仅表示文件、页数、尺寸、来源引用及布局规则通过；`content_status=NOT_REVIEWED` 表示没有独立事实/图片文字审查。不得把模型自检声明当人工验收。
+
+## 视频运行时与发布门槛
+
+显式运行 `bash deploy/production/install-video-runtime.sh /opt/nbppt-video-runtime`，固定模型摘要与 sherpa-onnx 版本。独立目录归 root，服务用户仅可读取；保留模型自带 MIT LICENSE。将 `NBPPT_TTS_PYTHON=/opt/nbppt-video-runtime/venv/bin/python`、`NBPPT_TTS_MODEL_DIR=/opt/nbppt-video-runtime/vits-melo-tts-zh_en` 加入 worker 环境文件。禁止客户控制这些路径。
+
+公开视频请求固定开启配音；模型缺失、旁白过长、损坏 MP4、字幕不匹配均失败退款，不返回静音替代品。画面为 720p/24fps H.264，AAC 中文旁白，6–60 秒，16:9 或 9:16。每场旁白最长不超过场景时间，最多 1.2 倍语速，禁止截断。全阶段共用单任务执行信号量，适配 2GB VPS；网页双轨进度不意味着两套模型同时执行。
+
+先在独立候选目录/数据库和回环端口运行 Linux 测试及真实 Codex→配音→MP4 流；检查逐场字幕、海报、全帧解码与实际预览、Range 请求、越权拒绝、失败退款/新任务重试。无在途业务任务再更新代码、重启，生产复测同一交付链。第三方 Remotion 技能仅隔离评估，未确认商业许可与质量前不安装到生产 worker。

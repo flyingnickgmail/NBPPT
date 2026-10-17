@@ -45,7 +45,7 @@ async def call_remote(config, name, arguments):
 
 async def download_artifacts(config, result):
     job_id = result['job_id']
-    if not re.fullmatch(r'ppt_[0-9a-f]{10}', job_id):
+    if not re.fullmatch(r'(?:ppt|video)_[0-9a-f]{10}', job_id):
         raise ValueError('Invalid job id')
     root = Path(config['download_dir']).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -58,8 +58,10 @@ async def download_artifacts(config, result):
     async with httpx.AsyncClient(headers={'Authorization': 'Bearer ' + config['api_key']}, timeout=120, trust_env=False) as http:
         for entry in result['files']:
             name = entry['path']
-            if not (name in (f'{job_id}_deck.pptx', f'{job_id}_deck_interactive.html') or
-                    re.fullmatch(r'assets/slide_preview_[1-9][0-9]*\.png', name)):
+            allowed = (name in (f'{job_id}_video.mp4', 'assets/video_poster.png', 'subtitles.vtt')) if job_id.startswith('video_') else (
+                name in (f'{job_id}_deck.pptx', f'{job_id}_deck_interactive.html') or
+                re.fullmatch(r'assets/slide_preview_[1-9][0-9]*\.png', name))
+            if not allowed:
                 raise ValueError('Unexpected artifact path')
             target = directory / name
             if target.is_symlink() or target.parent.is_symlink():
@@ -80,13 +82,14 @@ async def download_artifacts(config, result):
                 finally:
                     temp.unlink(missing_ok=True)
             paths.append(str(target))
-    return {'job_id': job_id, 'slide_count': result['slide_count'], 'file_status': 'PASSED',
+    return {'job_id': job_id, 'task_type': result.get('task_type', job_id.split('_')[0]),
+            'video': result.get('video'), 'slide_count': result['slide_count'], 'file_status': 'PASSED',
             'content_status': 'NOT_REVIEWED', 'local_files': paths}
 
 
 def build_adapter(config):
     validate_config(config)
-    server = MCPServer('NBPPT-local', instructions='通过NBPPT生成PPT。提交任务后每30秒查询进度，完成后下载产物到本机。不得重复创建同一任务。')
+    server = MCPServer('NBPPT-local', instructions='通过NBPPT独立生成PPT或中文讲解视频。提交后每30秒查询，完成后下载到本机；失败只重试对应任务。')
 
     @server.tool()
     async def list_templates() -> dict:
@@ -99,13 +102,25 @@ def build_adapter(config):
         return await call_remote(config, 'create_presentation', {'source': source, 'request_id': request_id, 'template_id': template_id, 'slide_count': slide_count})
 
     @server.tool()
+    async def create_video(source: str, request_id: str, template_id: str = 'auto',
+                           duration_seconds: int = 30, aspect_ratio: str = '16:9') -> dict:
+        """完整原文生成独立中文配音视频，6–60秒；模板参考、画幅16:9或9:16。"""
+        return await call_remote(config, 'create_video', {'source': source, 'request_id': request_id,
+            'template_id': template_id, 'duration_seconds': duration_seconds, 'aspect_ratio': aspect_ratio})
+
+    @server.tool()
+    async def retry_job(job_id: str, request_id: str) -> dict:
+        """仅重试自己已失败退款的任务；使用新编号，网络重发须复用该编号。"""
+        return await call_remote(config, 'retry_job', {'job_id': job_id, 'request_id': request_id})
+
+    @server.tool()
     async def get_job_status(job_id: str) -> dict:
         """查看任务状态；RUNNING时30秒后再查，COMPLETED后获取产物。"""
         return await call_remote(config, 'get_job_status', {'job_id': job_id})
 
     @server.tool()
     async def get_job_artifacts(job_id: str) -> dict:
-        """下载已完成的PPTX/HTML/PNG并核对摘要，返回本机文件路径。"""
+        """下载已完成的PPTX/HTML/PNG或MP4/海报/VTT，核对摘要，返回本机文件路径。"""
         result = await call_remote(config, 'get_job_artifacts', {'job_id': job_id})
         return await download_artifacts(config, result)
 
