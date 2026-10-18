@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUNDLED_SKILL = ROOT / "worker" / "skills" / "source-motion-video" / "SKILL.md"
 RENDERER = ROOT / "worker" / "video_renderer.py"
 SPEECH_RENDERER = ROOT / "worker" / "video_speech.py"
+SUBTITLE_RENDERER = ROOT / "worker" / "video_subtitles.py"
 def skill_references() -> list[Path]:
     if not BUNDLED_SKILL.is_file():
         raise RuntimeError("缺少可信的视频规划技能")
@@ -85,9 +86,9 @@ def _planner_command(codex_bin: str, prompt: str, job_dir: Path) -> list[str]:
     return command
 
 
-def _trusted_tts_runtime() -> tuple[Path, Path]:
+def _trusted_tts_runtime(voice: str = "melo") -> tuple[Path, Path]:
     python_value = os.environ.get("NBPPT_TTS_PYTHON", "")
-    model_value = os.environ.get("NBPPT_TTS_MODEL_DIR", "")
+    model_value = os.environ.get("NBPPT_TTS_MODEL_DIR" if voice == "melo" else "NBPPT_KOKORO_MODEL_DIR", "")
     if not python_value or not Path(python_value).is_absolute():
         raise RuntimeError("服务器未配置独立中文语音运行时，视频不会降级为静音")
     tts_python = Path(python_value)
@@ -103,8 +104,8 @@ def _trusted_tts_runtime() -> tuple[Path, Path]:
     return tts_python, model_dir.resolve()
 
 
-def package_video(job_id: str, job_dir: Path, spec: dict) -> tuple[dict, dict]:
-    plan_path = job_dir / "video_plan.json"
+def package_video(job_id: str, job_dir: Path, spec: dict, planner_dir: Path | None = None) -> tuple[dict, dict]:
+    plan_path = (planner_dir or job_dir) / "video_plan.json"
     if plan_path.is_symlink() or not plan_path.is_file() or not plan_path.resolve().is_relative_to(job_dir.resolve()):
         raise ValueError("规划器没有生成安全的视频计划文件")
     if plan_path.stat().st_size > 128 * 1024:
@@ -116,10 +117,10 @@ def package_video(job_id: str, job_dir: Path, spec: dict) -> tuple[dict, dict]:
                    "task_summary_cn": _plain_text(plan["task_summary_cn"], "task_summary_cn", 80),
                    "video_scenes": scenes,
                    "video_width": width, "video_height": height, "fps": 24,
-                   "video_audio": False,
+                   "video_audio": False, "subtitle_content": "narration",
                    "narration": {"requested": bool(spec.get("video_narration", True)),
                                  "status": "pending" if spec.get("video_narration", True) else "disabled",
-                                 "provider": "melo_tts" if spec.get("video_narration", True) else None,
+                                 "provider": ("melo_tts" if spec.get("video_voice", "melo") == "melo" else "kokoro") if spec.get("video_narration", True) else None,
                                  "script_source": "video_scenes", "audio_track": None},
                    "compiler_engine": "Codex 技能规划 + NBPPT 可信动态图文渲染",
                    "is_real_llm": True}
@@ -131,6 +132,7 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
     planner_proc = None
     renderer_proc = None
     speech_proc = None
+    subtitle_proc = None
     renderer_log = None
     speech_log = None
     acquired = False
@@ -138,13 +140,19 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
     try:
         safe_job_id(req.job_id)
         spec = validate_video_spec(req.english_spec)
+        if spec.get("video_subtitles", True):
+            from worker.video_subtitles import preflight_subtitles
+            await asyncio.to_thread(preflight_subtitles)
+        if spec.get("video_narration", True):
+            _trusted_tts_runtime(spec.get("video_voice", "melo"))
         job_dir = Path(jobs_root) / req.job_id
         job_dir.mkdir(parents=True, exist_ok=False)
-        (job_dir / "staging/assets").mkdir(parents=True)
-        (job_dir / "source.md").write_text(spec["original_prompt_cn"], encoding="utf-8")
-        (job_dir / "template.json").write_text(json.dumps(spec.get("matched_template", {}), ensure_ascii=False), encoding="utf-8")
+        planner_dir = job_dir / "planner"
+        planner_dir.mkdir()
+        (planner_dir / "source.md").write_text(spec["original_prompt_cn"], encoding="utf-8")
+        (planner_dir / "template.json").write_text(json.dumps(spec.get("matched_template", {}), ensure_ascii=False), encoding="utf-8")
         prompt = build_video_prompt(spec)
-        (job_dir / "agent_prompt.txt").write_text(prompt, encoding="utf-8")
+        (planner_dir / "agent_prompt.txt").write_text(prompt, encoding="utf-8")
         yield event("progress", pct=20, message_cn="视频原文与参数已通过契约检查，等待规划队列。")
         while not acquired:
             try:
@@ -152,11 +160,11 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
                 acquired = True
             except asyncio.TimeoutError:
                 yield event("progress", pct=20, message_cn="正在等待账号执行队列，视频原文与参数保持不变。")
-        command = _planner_command(codex_bin, prompt, job_dir)
+        command = _planner_command(codex_bin, prompt, planner_dir)
         started = time.monotonic()
         with (job_dir / "planner_exec.log").open("wb") as log:
             planner_proc = await asyncio.create_subprocess_exec(
-                *command, cwd=job_dir, env=_planner_environment(req), stdin=asyncio.subprocess.DEVNULL,
+                *command, cwd=planner_dir, env=_planner_environment(req), stdin=asyncio.subprocess.DEVNULL,
                 stdout=log, stderr=log, start_new_session=True)
             wait_task = asyncio.create_task(planner_proc.wait())
             while planner_proc.returncode is None:
@@ -171,10 +179,13 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
             raise RuntimeError(f"视频规划失败（退出码 {planner_proc.returncode}），未生成替代计划")
         await stop_process(planner_proc)
 
-        actual_spec, qa = package_video(req.job_id, job_dir, spec)
+        (job_dir / "staging/assets").mkdir(parents=True, exist_ok=False)
+        actual_spec, qa = package_video(req.job_id, job_dir, spec, planner_dir)
         yield event("progress", pct=50, message_cn=f"{len(actual_spec['video_scenes'])} 个场景已通过原文引用、时长和排版检查。")
         renderer_env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"),
                         "LANG": os.environ.get("LANG", "C.UTF-8"), "PYTHONUNBUFFERED": "1"}
+        if os.environ.get("NBPPT_FFMPEG"):
+            renderer_env["NBPPT_FFMPEG"] = os.environ["NBPPT_FFMPEG"]
         renderer_log = (job_dir / "renderer_exec.log").open("wb")
         renderer_proc = await asyncio.create_subprocess_exec(
             sys.executable, str(RENDERER), "--job-dir", str(job_dir), "--job-id", req.job_id,
@@ -206,10 +217,11 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
             raise RuntimeError("可信视频渲染失败：" + renderer_error[-800:])
 
         if actual_spec["narration"]["requested"]:
-            tts_python, model_dir = _trusted_tts_runtime()
+            voice = actual_spec.get("video_voice", "melo")
+            tts_python, model_dir = _trusted_tts_runtime(voice)
             speech_env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"),
                           "LANG": os.environ.get("LANG", "C.UTF-8"), "PYTHONUNBUFFERED": "1",
-                          "NBPPT_TTS_MODEL_DIR": str(model_dir)}
+                          ("NBPPT_TTS_MODEL_DIR" if voice == "melo" else "NBPPT_KOKORO_MODEL_DIR"): str(model_dir)}
             speech_log = (job_dir / "speech_exec.log").open("wb")
             speech_proc = await asyncio.create_subprocess_exec(
                 str(tts_python), str(SPEECH_RENDERER), "--job-dir", str(job_dir), "--job-id", req.job_id,
@@ -243,16 +255,34 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
             if speech_result_path.is_symlink() or not speech_result_path.is_file():
                 raise RuntimeError("中文配音完成但缺少可信结果")
             speech_result = json.loads(speech_result_path.read_text(encoding="utf-8"))
+            expected_provider = "melo_tts" if voice == "melo" else "kokoro"
+            if speech_result.get("provider") != expected_provider or speech_result.get("voice", "melo") != voice:
+                raise RuntimeError("配音结果与请求音色不一致")
             actual_spec["video_audio"] = True
             actual_spec["narration"] = {"requested": True, "status": "generated",
-                                        "provider": "melo_tts", "script_source": "video_scenes",
+                                        "provider": expected_provider, "voice": voice, "script_source": "video_scenes",
                                         "audio_track": "aac", "sample_rate": speech_result["sample_rate"],
                                         "scenes": speech_result["scenes"]}
             (job_dir / "validated_video_plan.json").write_text(
                 json.dumps(actual_spec, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        yield event("progress", pct=92, message_cn="视频编码完成，正在检查时长、比例和文件完整性。")
         staging = job_dir / "staging"
+        if spec.get("video_subtitles", True):
+            yield event("progress", pct=92, message_cn="正在按实际时间轴烧录中文字幕。")
+            video_path = staging / f"{req.job_id}_video.mp4"
+            subtitled = staging / f"{req.job_id}_subtitled.mp4"
+            subtitle_proc = await asyncio.create_subprocess_exec(
+                sys.executable, str(SUBTITLE_RENDERER), "--video", str(video_path),
+                "--subtitles", str(staging / "subtitles.vtt"), "--output", str(subtitled),
+                cwd=ROOT, env=renderer_env, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+            stdout, stderr = await asyncio.wait_for(subtitle_proc.communicate(), timeout=max(180, spec["video_duration_sec"] * 8))
+            if subtitle_proc.returncode != 0 or subtitled.is_symlink() or not subtitled.is_file():
+                raise RuntimeError("中文字幕处理失败：" + (stdout + stderr).decode("utf-8", errors="replace")[-800:])
+            os.replace(subtitled, video_path)
+            actual_spec["subtitles_burned"] = True
+            (job_dir / "validated_video_plan.json").write_text(json.dumps(actual_spec, ensure_ascii=False, indent=2), encoding="utf-8")
+        yield event("progress", pct=94, message_cn="视频编码完成，正在检查时长、比例和文件完整性。")
         manifest = inspect_delivery(req.job_id, "video", actual_spec, staging)
         audio_check = ("可信渲染器已输出 H.264 MP4、海报、旁白字幕和离线中文配音"
                        if actual_spec["video_audio"] else
@@ -283,6 +313,7 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
                 await stop_process(planner_proc)
                 await stop_process(renderer_proc)
                 await stop_process(speech_proc)
+                await stop_process(subtitle_proc)
         finally:
             if renderer_log:
                 renderer_log.close()

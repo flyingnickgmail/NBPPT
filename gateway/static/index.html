@@ -96,7 +96,13 @@
 <option value="9:16">9:16 竖屏</option>
 </select>
 </div>
-<p class="note">视频将在文件验收通过后开放预览。包含离线中文配音与字幕，配音失败不会以静音视频交付。</p>
+<div class="config-row">
+<label for="video-voice">配音音色</label>
+<select id="video-voice"><option value="melo">默认中文配音</option></select>
+</div>
+<div class="config-row"><label for="video-narration">中文配音</label><select id="video-narration"><option value="on">开启</option><option value="off">静音视频</option></select></div>
+<div class="config-row"><label for="video-captions">画面字幕</label><select id="video-captions"><option value="on">烧录字幕</option><option value="off">仅提供字幕文件</option></select></div>
+<p class="note">横竖屏分别排版。可选音色仅在服务器配置后显示；配音失败不会以静音替代。文件验收后可预览，专有名词读音仍需审听。</p>
 </div>
 </details>
 <div class="submit-area">

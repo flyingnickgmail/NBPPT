@@ -84,6 +84,7 @@ test('video submission sends the declared video contract and does not invent pro
   h.api.set(); h.api.updateMode('video'); h.get('source').value=sourceText; h.get('video-duration').value='45'; h.get('video-ratio').value='9:16';
   await h.get('brief').onsubmit({preventDefault(){}}); await tick();
   assert.equal(requests[0].task_type,'video'); assert.equal(requests[0].video_duration_sec,45); assert.equal(requests[0].video_aspect_ratio,'9:16');
+  assert.equal(requests[0].video_voice,'melo'); assert.equal(requests[0].video_narration,true); assert.equal(requests[0].video_subtitles,true);
   assert.match(requests[0].request_id,/^[0-9a-f-]{36}$/); assert.equal(h.get('video-progress').textContent,'正在生成视频');
   assert.equal(h.get('video-meter').value,undefined); assert.equal(h.get('video-meter').hidden,false);
 });
@@ -169,6 +170,27 @@ test('video preview uses same-origin validated mp4, poster and subtitles', () =>
   assert.equal(h.get('video-player').src,'/artifacts/video_abcdef0123/result.mp4'); assert.equal(h.get('video-player').poster,'/artifacts/video_abcdef0123/poster.jpg');
   assert.equal(h.get('video-subtitles').src,'/artifacts/video_abcdef0123/subtitles.vtt'); assert.equal(h.get('video-download').href,'/artifacts/video_abcdef0123/result.mp4');
   assert.equal(h.get('video-panel').hidden,false);
+  h.api.renderVideo({video:{subtitles_burned:true},artifacts:{mp4_url:'/artifacts/video_abcdef0123/result.mp4',subtitles_url:'/artifacts/video_abcdef0123/subtitles.vtt'}},'video_abcdef0123');
+  assert.equal(h.get('video-subtitles').default,false);
+});
+
+test('studio markup has unique control ids', () => {
+  const ids = [...fs.readFileSync('gateway/static/index.html','utf8').matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);
+  assert.equal(ids.length, new Set(ids).size);
+});
+
+test('chosen voice and explicit silent captions options are submitted', async () => {
+  const requests=[];
+  const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs'){requests.push(JSON.parse(options.body));return response({job_id:'video_abcdef0123'});}
+    if(path==='/api/wallet')return response({user:{credits_available:920}});
+    return response({status:'RUNNING'});
+  });
+  h.api.set();h.api.updateMode('video');h.get('source').value=sourceText;
+  h.get('video-voice').value='kokoro_male';h.get('video-narration').value='off';h.get('video-captions').value='off';
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  assert.equal(requests[0].video_voice,'kokoro_male');
+  assert.equal(requests[0].video_narration,false);assert.equal(requests[0].video_subtitles,false);
 });
 
 test('401 clears PPT and video private previews, draft and active task', async () => {

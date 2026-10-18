@@ -103,6 +103,8 @@ function renderVideo(result, jobId) {
   $('video-player').src = safeArtifact(links.mp4_url, jobId);
   if (links.video_poster_url) $('video-player').poster = safeArtifact(links.video_poster_url, jobId); else $('video-player').removeAttribute('poster');
   if (links.subtitles_url) $('video-subtitles').src = safeArtifact(links.subtitles_url, jobId); else $('video-subtitles').removeAttribute('src');
+  $('video-subtitles').default = result.video?.subtitles_burned !== true;
+  if ($('video-subtitles').track) $('video-subtitles').track.mode = result.video?.subtitles_burned ? 'disabled' : 'showing';
   $('video-download').href = safeArtifact(links.mp4_url, jobId); $('video-player').load(); deliveries.video = result;
   $('video-panel').hidden = false; updatePreview();
 }
@@ -178,7 +180,7 @@ async function pollKind(kind) {
 async function refreshWallet() { const authEpoch = epoch; const data = await api('/api/wallet'); if (authEpoch !== epoch || !authenticated) return; $('wallet').textContent = `可用 ${data.user.credits_available} 点`; }
 function payloadFor(kind, task = activeTask) {
   const input = task.input;
-  return {source:input.source, template_id:input.template_id || 'auto', slide_count:Number(input.slide_count || 0), task_type:kind, video_duration_sec:Number(input.video_duration_sec || 30), video_aspect_ratio:input.video_aspect_ratio || '16:9', request_id:task.request_ids[kind]};
+  return {source:input.source, template_id:input.template_id || 'auto', slide_count:Number(input.slide_count || 0), task_type:kind, video_duration_sec:Number(input.video_duration_sec || 30), video_aspect_ratio:input.video_aspect_ratio || '16:9', video_voice:input.video_voice || 'melo', video_narration:input.video_narration !== false, video_subtitles:input.video_subtitles !== false, request_id:task.request_ids[kind]};
 }
 async function submitKind(kind) {
   const task = activeTask;
@@ -227,6 +229,11 @@ async function initialize() {
   const templates = await api('/api/templates'); if (initEpoch !== epoch) return; $('style').replaceChildren(new Option('自动匹配','auto'));
   templates.templates.forEach(t => { if (t.id !== 'auto') $('style').add(new Option(t.name, t.id)); });
   capabilities = await api('/api/capabilities'); if (initEpoch !== epoch) return;
+  const voiceNames = {melo:'默认中文配音',kokoro_female:'Kokoro 中文女声（可选）',kokoro_male:'Kokoro 中文男声（可选）'};
+  $('video-voice').replaceChildren();
+  for (const voice of capabilities.delivery_modes.video.voices || ['melo']) {
+    if (voiceNames[voice]) $('video-voice').add(new Option(voiceNames[voice], voice));
+  }
   const videoSupported = capabilities.delivery_modes.video.supported === true; $('mode-video').disabled = !videoSupported; $('mode-composite').disabled = !videoSupported;
   if (!videoSupported && mode !== 'ppt') updateMode('ppt'); else updateMode(mode);
   await refreshWallet(); if (initEpoch !== epoch) return; ready = true; controls();
@@ -252,12 +259,16 @@ $('account').onclick = async () => {
 $('brief').onsubmit = async event => {
   event.preventDefault(); if (busy || !authenticated || !ready || !canGenerate) return;
   const requestedMode = mode;
-  const input = {source:$('source').value.trim(), template_id:$('style').value, slide_count:Number($('pages').value), video_duration_sec:Number($('video-duration').value), video_aspect_ratio:$('video-ratio').value};
+  const input = {source:$('source').value.trim(), template_id:$('style').value, slide_count:Number($('pages').value), video_duration_sec:Number($('video-duration').value), video_aspect_ratio:$('video-ratio').value, video_voice:$('video-voice').value || 'melo', video_narration:$('video-narration').value !== 'off', video_subtitles:$('video-captions').value !== 'off'};
   if (input.source.length < 20) return notice('请至少输入20个字的原文与要求。');
   if (mode !== 'ppt' && (!Number.isInteger(input.video_duration_sec) || input.video_duration_sec < 6 || input.video_duration_sec > 60)) return notice('视频时长须为 6–60 秒整数。');
   busy = true; controls(); notice();
   try {
-    const signature = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({mode:requestedMode,input}))))).map(b=>b.toString(16).padStart(2,'0')).join('');
+    const signatureInput = {...input};
+    for (const [key,value] of [['video_voice','melo'],['video_narration',true],['video_subtitles',true]]) {
+      if (signatureInput[key] === value) delete signatureInput[key];
+    }
+    const signature = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({mode:requestedMode,input:signatureInput}))))).map(b=>b.toString(16).padStart(2,'0')).join('');
     const requestedKinds = kindsFor(requestedMode), sameUnfinished = activeTask?.signature === signature && requestedKinds.some(kind => !activeTask.jobs[kind] || states[kind]?.status !== 'COMPLETED');
     const failedKinds = sameUnfinished ? requestedKinds.filter(kind => activeTask.jobs[kind] && states[kind]?.status === 'FAILED') : [];
     if (!sameUnfinished) { const requestIds = {}; requestedKinds.forEach(kind => requestIds[kind] = crypto.randomUUID()); activeTask = {mode:requestedMode, input, signature, jobs:{}, request_ids:requestIds, submit_errors:{}}; }
