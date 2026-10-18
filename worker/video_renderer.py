@@ -32,6 +32,8 @@ LAYOUTS = {"title", "comparison", "process"}
 DEFAULT_PALETTE = {"bg": "#F5F7F8", "surface": "#FFFFFF", "border": "#CAD9DD",
                    "primary": "#08717A", "accent": "#D45B45", "text": "#172C35",
                    "muted": "#6A7B82"}
+PORTRAIT_CONTENT_BOTTOM = .80
+PORTRAIT_SUBTITLE_TOP = .84
 
 
 class RenderError(RuntimeError):
@@ -96,12 +98,148 @@ def _base_canvas(width: int, height: int, scene_num: int, palette: dict) -> tupl
     draw = ImageDraw.Draw(image)
     draw.rectangle((0, 0, width, max(10, height // 70)), fill=palette["primary"])
     draw.ellipse((int(width * .72), -int(height * .28), int(width * 1.08), int(height * .36)), fill=palette["surface"])
-    draw.text((int(width * .055), int(height * .91)), f"NBPPT  ·  {scene_num:02d}",
-              font=_font(max(16, height // 45)), fill=palette["muted"])
+    portrait = height > width
+    footer_y = int(height * .805)
+    draw.text((int(width * .055), footer_y), f"NBPPT  ·  {scene_num:02d}",
+              font=_font(max(16, min(width, height) // 45)), fill=palette["muted"])
+    # Burned captions live below this rule. Scene content must never occupy the
+    # caption band; portrait exports also use a native layout rather than a
+    # shrunken landscape frame.
+    rule_y = int(height * PORTRAIT_SUBTITLE_TOP)
+    draw.line((int(width * .055), rule_y, int(width * .945), rule_y),
+              fill=palette["border"], width=max(1, height // 640))
     return image, draw
 
 
+def _fit_text(draw: ImageDraw.ImageDraw, text: str, max_width: int, max_height: int,
+              max_size: int, min_size: int, bold: bool = False,
+              max_lines: int | None = None) -> tuple[ImageFont.FreeTypeFont, list[str], int]:
+    """Return a font/line set that preserves all text inside a pixel box."""
+    fallback = None
+    for size in range(max_size, min_size - 1, -1):
+        font = _font(size, bold=bold)
+        lines = _wrap(draw, text, font, max_width)
+        if max_lines is not None and len(lines) > max_lines:
+            continue
+        spacing = max(5, size // 4)
+        box = draw.multiline_textbbox((0, 0), "\n".join(lines), font=font, spacing=spacing)
+        if box[2] <= max_width + 1 and box[3] - box[1] <= max_height:
+            if len(lines) > 1 and len(lines[-1].strip()) < 3:
+                if fallback is None:
+                    fallback = (font, lines, spacing)
+                continue
+            return font, lines, spacing
+    if fallback is not None:
+        return fallback
+    raise RenderError("视频文字超过可信渲染器的完整排版容量")
+
+
+def _draw_fitted(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, fill: str,
+                 max_width: int, max_height: int, max_size: int, min_size: int,
+                 bold: bool = False, max_lines: int | None = None,
+                 center_vertical: bool = False) -> int:
+    font, lines, spacing = _fit_text(draw, text, max_width, max_height, max_size,
+                                     min_size, bold=bold, max_lines=max_lines)
+    rendered = "\n".join(lines)
+    if center_vertical:
+        local_box = draw.multiline_textbbox((0, 0), rendered, font=font, spacing=spacing)
+        xy = (xy[0], xy[1] + (max_height - (local_box[3] - local_box[1])) // 2 - local_box[1])
+    draw.multiline_text(xy, rendered, font=font, fill=fill, spacing=spacing)
+    box = draw.multiline_textbbox(xy, rendered, font=font, spacing=spacing)
+    return box[3] - box[1]
+
+
+def _render_portrait_scene(scene: dict, width: int, height: int,
+                           destination: Path, palette: dict) -> None:
+    """Compose a native 9:16 scene while keeping a clean caption band."""
+    image, draw = _base_canvas(width, height, scene["scene_num"], palette)
+    margin = int(width * .075)
+    inner_width = width - 2 * margin
+    content_bottom = int(height * PORTRAIT_CONTENT_BOTTOM)
+    title_y = int(height * .075)
+    title_h = _draw_fitted(draw, (margin, title_y), scene["title"], palette["text"],
+                           inner_width, int(height * .14), max_size=54, min_size=34,
+                           bold=True, max_lines=3)
+    cursor = title_y + title_h + int(height * .025)
+    layout = scene["layout"]
+    items = scene["items"]
+
+    if layout == "title":
+        items_top = int(height * .54) if items else content_bottom
+        body_space = items_top - cursor - int(height * .02)
+        _draw_fitted(draw, (margin, cursor), scene["body"], palette["muted"],
+                     inner_width, body_space, max_size=42, min_size=25, max_lines=9)
+        if items:
+            gap = int(height * .012)
+            available = content_bottom - items_top - gap * (len(items) - 1)
+            chip_h = available // len(items)
+            if chip_h < 62:
+                raise RenderError("竖版标题项目超过像素容量")
+            for index, item in enumerate(items):
+                row_y = items_top + index * (chip_h + gap)
+                draw.rounded_rectangle((margin, row_y, width - margin, row_y + chip_h),
+                                       radius=18, fill=palette["surface"],
+                                       outline=palette["border"], width=2)
+                text_y = row_y + int(chip_h * .16)
+                _draw_fitted(draw, (margin + 22, text_y), item, palette["primary"],
+                             inner_width - 44, int(chip_h * .68), max_size=36,
+                             min_size=22, bold=True, max_lines=3, center_vertical=True)
+    elif layout == "comparison":
+        if len(items) != 2:
+            raise RenderError("对比版式必须包含两个对比项")
+        body_h = _draw_fitted(draw, (margin, cursor), scene["body"], palette["muted"],
+                              inner_width, int(height * .15), max_size=36,
+                              min_size=23, max_lines=5)
+        cards_top = cursor + body_h + int(height * .025)
+        gap = int(height * .025)
+        card_h = (content_bottom - cards_top - gap) // 2
+        if card_h < 120:
+            raise RenderError("竖版对比项目超过像素容量")
+        for index, item in enumerate(items):
+            card_y = cards_top + index * (card_h + gap)
+            draw.rounded_rectangle((margin, card_y, width - margin, card_y + card_h),
+                                   radius=22, fill=palette["surface"],
+                                   outline=palette["border"], width=2)
+            color = palette["primary"] if index == 0 else palette["accent"]
+            draw.rectangle((margin, card_y, margin + 14, card_y + card_h), fill=color)
+            _draw_fitted(draw, (margin + 36, card_y + 28), item, palette["text"],
+                         inner_width - 72, card_h - 56, max_size=42, min_size=24,
+                         bold=True, max_lines=6, center_vertical=True)
+    elif layout == "process":
+        if not 2 <= len(items) <= 5:
+            raise RenderError("流程版式必须包含二至五个步骤")
+        body_h = _draw_fitted(draw, (margin, cursor), scene["body"], palette["muted"],
+                              inner_width, int(height * .14), max_size=34,
+                              min_size=22, max_lines=5)
+        flow_y = cursor + body_h + int(height * .025)
+        gap = int(height * .011)
+        step_h = (content_bottom - flow_y - gap * (len(items) - 1)) // len(items)
+        if step_h < 72:
+            raise RenderError("竖版流程项目超过像素容量")
+        for index, item in enumerate(items):
+            row_y = flow_y + index * (step_h + gap)
+            draw.rounded_rectangle((margin, row_y, width - margin, row_y + step_h),
+                                   radius=18, fill=palette["surface"],
+                                   outline=palette["border"], width=2)
+            badge = min(46, step_h - 24)
+            badge_y = row_y + (step_h - badge) // 2
+            draw.ellipse((margin + 18, badge_y, margin + 18 + badge, badge_y + badge),
+                         fill=palette["primary"])
+            draw.text((margin + 18 + badge // 2, badge_y + badge // 2), str(index + 1),
+                      font=_font(max(16, badge // 2), True), fill="white", anchor="mm")
+            text_x = margin + 18 + badge + 22
+            _draw_fitted(draw, (text_x, row_y + 14), item, palette["text"],
+                         width - margin - 20 - text_x, step_h - 28,
+                         max_size=34, min_size=20, bold=True, max_lines=3, center_vertical=True)
+    else:
+        raise RenderError("不支持的视频版式")
+    image.save(destination, format="PNG", optimize=True)
+
+
 def _render_scene(scene: dict, width: int, height: int, destination: Path, palette: dict) -> None:
+    if height > width:
+        _render_portrait_scene(scene, width, height, destination, palette)
+        return
     image, draw = _base_canvas(width, height, scene["scene_num"], palette)
     margin = int(width * .075)
     title_size = max(38, int(min(width, height) * .075))
@@ -120,10 +258,10 @@ def _render_scene(scene: dict, width: int, height: int, destination: Path, palet
 
     if layout == "title":
         _draw_wrapped(draw, (margin, y), scene["body"], body_font, palette["muted"],
-                      int(width * .72), max_lines=5, max_bottom=int(height * .65))
+                      int(width * .72), max_lines=5, max_bottom=int(height * .61))
         if items:
             portrait = height > width
-            chip_y = int(height * (.66 if portrait else .69))
+            chip_y = int(height * (.66 if portrait else .64))
             gap = int(height * .012) if portrait else int(width * .018)
             chip_w = width - 2 * margin if portrait else int((width * .82 - (len(items) - 1) * gap) / len(items))
             chip_h = int((height * .22 - (len(items) - 1) * gap) / len(items)) if portrait else int(height * .11)
@@ -160,15 +298,15 @@ def _render_scene(scene: dict, width: int, height: int, destination: Path, palet
             card_w = int((width - 2 * margin - gap) / 2)
             for index, item in enumerate(items):
                 x = margin + index * (card_w + gap)
-                draw.rounded_rectangle((x, y, x + card_w, int(height * .72)), radius=22,
+                draw.rounded_rectangle((x, y, x + card_w, int(height * .67)), radius=22,
                                        fill=palette["surface"], outline=palette["border"], width=2)
                 draw.rectangle((x, y, x + card_w, y + int(height * .025)),
                                fill=(palette["primary"] if index == 0 else palette["accent"]))
                 _draw_wrapped(draw, (x + 28, y + 42), item, item_font, palette["text"],
-                              card_w - 56, max_lines=3, max_bottom=int(height * .69))
-            body_y = int(height * .77)
+                              card_w - 56, max_lines=3, max_bottom=int(height * .64))
+            body_y = int(height * .71)
         _draw_wrapped(draw, (margin, body_y), scene["body"], body_font, palette["muted"],
-                      width - 2 * margin, max_lines=3, max_bottom=int(height * .88))
+                      width - 2 * margin, max_lines=3, max_bottom=int(height * .79))
     elif layout == "process":
         if not 2 <= len(items) <= 5:
             raise RenderError("流程版式必须包含二至五个步骤")
@@ -212,7 +350,7 @@ def _vtt_time(seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.000"
 
 
-def _write_subtitles(path: Path, scenes: list[dict]) -> None:
+def _write_subtitles(path: Path, scenes: list[dict], narration_captions: bool = False) -> None:
     output = ["WEBVTT", ""]
     cursor = 0
     for scene in scenes:
@@ -220,6 +358,8 @@ def _write_subtitles(path: Path, scenes: list[dict]) -> None:
         text = scene["title"] + "\n" + scene["body"]
         if scene["items"]:
             text += "\n" + "；".join(scene["items"])
+        if narration_captions:
+            text = scene["narration"]
         output.extend([f"{_vtt_time(cursor)} --> {_vtt_time(end)}", html.escape(text), ""])
         cursor = end
     path.write_text("\n".join(output), encoding="utf-8")
@@ -326,7 +466,7 @@ def render_video(job_dir: Path, job_id: str, plan: dict) -> dict:
             _render_scene(scene, width, height, destination, palette)
             scene_files.append(destination)
         shutil.copyfile(scene_files[0], assets / "video_poster.png")
-        _write_subtitles(staging / "subtitles.vtt", scenes)
+        _write_subtitles(staging / "subtitles.vtt", scenes, plan.get("subtitle_content") == "narration")
         video = staging / f"{job_id}_video.mp4"
         _encode(scene_files, scenes, video, width, height)
         if not video.is_file() or video.stat().st_size == 0:

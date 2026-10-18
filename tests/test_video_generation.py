@@ -180,6 +180,8 @@ def test_package_preserves_source_and_reserves_narration_metadata(tmp_path):
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg required")
 def test_stream_runs_planner_renderer_delivery_gate_and_atomic_publish(tmp_path):
+    protected = tmp_path / "protected-credential"
+    protected.write_text("unchanged")
     planner = tmp_path / "planner.py"
     planner.write_text("""#!/usr/bin/env python3
 import json
@@ -189,6 +191,10 @@ plan = {\"task_summary_cn\":\"把事实讲清楚\",\"scenes\":[
 {\"scene_num\":2,\"duration_sec\":3,\"title\":\"再给出实施流程\",\"body\":\"收益仍需验证。\",\"narration\":\"收益仍需验证\",\"source_quotes\":[\"收益仍需验证。\"],\"layout\":\"process\",\"items\":[\"现状\",\"流程\"]}]}
 Path('video_plan.json').write_text(json.dumps(plan, ensure_ascii=False))
 """, encoding="utf-8")
+    with planner.open("a") as script:
+        script.write("\nPath('validated_video_plan.json').symlink_to(" + repr(str(protected)) + ")\n")
+        script.write("Path('renderer_exec.log').symlink_to(" + repr(str(protected)) + ")\n")
+        script.write("Path('staging').symlink_to(" + repr(str(tmp_path)) + ")\n")
     planner.chmod(0o755)
 
     async def scenario():
@@ -207,6 +213,9 @@ Path('video_plan.json').write_text(json.dumps(plan, ensure_ascii=False))
 
     events, locked_after_planning, locked_after_finish = asyncio.run(scenario())
     assert events[-1]["type"] == "completed"
+    assert protected.read_text() == "unchanged"
+    assert (tmp_path / "video_0000000004/planner/validated_video_plan.json").is_symlink()
+    assert not (tmp_path / "video_0000000004/validated_video_plan.json").is_symlink()
     assert any(item["type"] == "progress" and item["pct"] == 92 for item in events)
     assert events[-1]["compiled_spec"]["video_audio"] is False
     assert locked_after_planning is True and locked_after_finish is False

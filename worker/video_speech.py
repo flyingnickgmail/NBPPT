@@ -19,24 +19,40 @@ class SpeechError(RuntimeError):
 
 
 MODEL_FILES = ("model.onnx", "lexicon.txt", "tokens.txt", "date.fst", "number.fst", "phone.fst")
+KOKORO_FILES = ("model.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt", "lexicon-zh.txt",
+                "date-zh.fst", "number-zh.fst", "phone-zh.fst")
+VOICE_IDS = {"melo": 0, "kokoro_female": 3, "kokoro_male": 58}
 
 
-def trusted_model_dir() -> Path:
-    value = os.environ.get("NBPPT_TTS_MODEL_DIR", "")
+def trusted_model_dir(voice: str = "melo") -> Path:
+    if voice not in VOICE_IDS:
+        raise SpeechError("不支持的视频音色")
+    value = os.environ.get("NBPPT_TTS_MODEL_DIR" if voice == "melo" else "NBPPT_KOKORO_MODEL_DIR", "")
     if not value or not Path(value).is_absolute():
         raise SpeechError("服务器未配置受信的中文语音模型目录")
     root = Path(value)
     if root.is_symlink() or not root.is_dir():
         raise SpeechError("中文语音模型目录无效")
     root = root.resolve()
-    for name in MODEL_FILES:
+    for name in MODEL_FILES if voice == "melo" else KOKORO_FILES:
         path = root / name
         if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):
             raise SpeechError(f"中文语音模型缺少受信文件：{name}")
-    dictionary = root / "dict"
+    dictionary = root / ("dict" if voice == "melo" else "espeak-ng-data")
     if dictionary.is_symlink() or not dictionary.is_dir() or not dictionary.resolve().is_relative_to(root):
         raise SpeechError("中文语音模型缺少受信词典")
     return root
+
+
+def build_kokoro_engine(model_dir: Path):
+    import sherpa_onnx
+    kokoro = sherpa_onnx.OfflineTtsKokoroModelConfig(
+        model=str(model_dir / "model.onnx"), voices=str(model_dir / "voices.bin"),
+        tokens=str(model_dir / "tokens.txt"), data_dir=str(model_dir / "espeak-ng-data"),
+        lexicon=",".join(str(model_dir / name) for name in ("lexicon-us-en.txt", "lexicon-zh.txt")))
+    return sherpa_onnx.OfflineTts(sherpa_onnx.OfflineTtsConfig(
+        model=sherpa_onnx.OfflineTtsModelConfig(kokoro=kokoro, num_threads=2, provider="cpu"),
+        rule_fsts=",".join(str(model_dir / name) for name in ("date-zh.fst", "number-zh.fst", "phone-zh.fst"))))
 
 
 def build_engine(model_dir: Path):
@@ -65,9 +81,9 @@ def _stamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
-def _generate(engine, text: str, speed: float):
+def _generate(engine, text: str, speed: float, sid: int = 0):
     import numpy as np
-    generated = engine.generate(text, sid=0, speed=speed)
+    generated = engine.generate(text, sid=sid, speed=speed)
     samples = np.asarray(generated.samples, dtype=np.float32)
     sample_rate = int(generated.sample_rate)
     if samples.ndim != 1 or len(samples) == 0 or sample_rate <= 0 or not np.isfinite(samples).all():
@@ -125,8 +141,12 @@ def synthesize_narration(job_dir: Path, job_id: str, plan: dict, engine=None) ->
     scenes = plan.get("video_scenes")
     if not isinstance(scenes, list) or not scenes:
         raise SpeechError("缺少已验证的配音场景")
+    voice = plan.get("video_voice", "melo")
+    if voice not in VOICE_IDS:
+        raise SpeechError("不支持的视频音色")
     if engine is None:
-        engine = build_engine(trusted_model_dir())
+        model_dir = trusted_model_dir(voice)
+        engine = build_engine(model_dir) if voice == "melo" else build_kokoro_engine(model_dir)
     work = staging / ".speech-work"
     work.mkdir(parents=True, exist_ok=False)
     scene_results = []
@@ -140,7 +160,7 @@ def synthesize_narration(job_dir: Path, job_id: str, plan: dict, engine=None) ->
             scene_duration = int(scene["duration_sec"])
             breathing = min(.4, max(.25, scene_duration * .08))
             max_speech = scene_duration - breathing
-            samples, current_rate = _generate(engine, narration, 1.0)
+            samples, current_rate = _generate(engine, narration, 1.0, VOICE_IDS[voice])
             if sample_rate is None:
                 sample_rate = current_rate
             elif current_rate != sample_rate:
@@ -149,7 +169,7 @@ def synthesize_narration(job_dir: Path, job_id: str, plan: dict, engine=None) ->
             speed = 1.0
             if speech_duration > max_speech:
                 speed = min(1.2, max(1.01, speech_duration / max_speech * 1.02))
-                samples, current_rate = _generate(engine, narration, speed)
+                samples, current_rate = _generate(engine, narration, speed, VOICE_IDS[voice])
                 if current_rate != sample_rate:
                     raise SpeechError("中文语音模型在重试时改变了采样率")
                 speech_duration = len(samples) / sample_rate
@@ -179,7 +199,7 @@ def synthesize_narration(job_dir: Path, job_id: str, plan: dict, engine=None) ->
         total_duration = sum(int(scene["duration_sec"]) for scene in scenes)
         _mux_audio(video, wav_path, muxed, total_duration)
         os.replace(muxed, video)
-        result = {"provider": "melo_tts", "sample_rate": sample_rate,
+        result = {"provider": "melo_tts" if voice == "melo" else "kokoro", "voice": voice, "sample_rate": sample_rate,
                   "total_duration_sec": total_duration, "scenes": scene_results}
         (job_dir / "speech_result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps({"type": "progress", "pct": 100, "message": "audio_muxed"}), flush=True)

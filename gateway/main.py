@@ -149,6 +149,9 @@ class AsyncCreateJobRequest(BaseModel):
     task_type: Literal['ppt', 'video'] = 'ppt'
     video_duration_sec: int = Field(default=30, ge=6, le=60, strict=True)
     video_aspect_ratio: Literal['16:9', '9:16'] = '16:9'
+    video_voice: Literal['melo', 'kokoro_female', 'kokoro_male'] = 'melo'
+    video_narration: bool = Field(default=True, strict=True)
+    video_subtitles: bool = Field(default=True, strict=True)
 
 
 class RetryJobRequest(BaseModel):
@@ -204,7 +207,8 @@ def production_capabilities():
         "video": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["video"],
                   "progress": True, "preview_after_validation": True, "retry": True,
                   "planner_providers": {"codex_cli": True, "claude_cli": False},
-                  "narration": "melo_tts", "duration_range": [6, 60], "aspect_ratios": ["16:9", "9:16"]},
+                  "narration": "melo_tts", "voices": ["melo"] + (["kokoro_female", "kokoro_male"] if os.getenv("NBPPT_KOKORO_ENABLED", "false").lower() == "true" else []),
+                  "burned_subtitles": True, "duration_range": [6, 60], "aspect_ratios": ["16:9", "9:16"]},
         "composite": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"] + TASK_FREEZE_CREDITS["video"],
                       "progress": True, "preview_after_validation": True, "retry": True,
                       "submission": "independent_jobs"},
@@ -363,7 +367,8 @@ async def create_job(req: AsyncCreateJobRequest, request: Request):
     try:
         return await mcp_jobs.create(request.state.principal, req.source, req.template_id,
                                      req.slide_count, req.request_id, req.task_type,
-                                     req.video_duration_sec, req.video_aspect_ratio)
+                                     req.video_duration_sec, req.video_aspect_ratio,
+                                     req.video_voice, req.video_narration, req.video_subtitles)
     except (ValueError, PermissionError) as exc:
         job_error(exc, conflict="request_id已用于" in str(exc))
 

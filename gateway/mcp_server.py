@@ -40,10 +40,17 @@ class PresentationJobs:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def create(self, principal, source, template_id, slide_count, request_id,
-                     task_type='ppt', video_duration_sec=30, video_aspect_ratio='16:9'):
+                     task_type='ppt', video_duration_sec=30, video_aspect_ratio='16:9',
+                     video_voice='melo', video_narration=True, video_subtitles=True):
         self._require_scope(principal, write=True)
         if task_type not in ('ppt', 'video'):
             raise ValueError('PPT和视频须分别创建任务，以便独立结算和重试')
+        if task_type == 'video':
+            from gateway.video_contract import VIDEO_VOICES
+            if video_voice not in VIDEO_VOICES or type(video_narration) is not bool or type(video_subtitles) is not bool:
+                raise ValueError('视频音色或配音、字幕开关无效')
+            if video_voice != 'melo' and os.getenv('NBPPT_KOKORO_ENABLED', 'false').lower() != 'true':
+                raise ValueError('服务器尚未启用 Kokoro 可选音色，请选择默认中文配音')
         if task_type == 'video' and (type(video_duration_sec) is not int or not 6 <= video_duration_sec <= 60
                                      or video_aspect_ratio not in ('16:9', '9:16')):
             raise ValueError('视频时长须为6–60秒整数，画幅须为16:9或9:16')
@@ -56,8 +63,13 @@ class PresentationJobs:
         arguments = {"source": source, "template_id": template_id, "slide_count": slide_count}
         if task_type == 'video':
             arguments.update(task_type='video', slide_count=0, video_duration_sec=video_duration_sec,
-                             video_aspect_ratio=video_aspect_ratio)
-        fingerprint = hashlib.sha256(json.dumps(arguments, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                             video_aspect_ratio=video_aspect_ratio, video_voice=video_voice,
+                             video_narration=video_narration, video_subtitles=video_subtitles)
+        fingerprint_args = dict(arguments)
+        for key, default in (('video_voice', 'melo'), ('video_narration', True), ('video_subtitles', True)):
+            if fingerprint_args.get(key) == default:
+                fingerprint_args.pop(key, None)
+        fingerprint = hashlib.sha256(json.dumps(fingerprint_args, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         job_id = task_type + "_" + hashlib.sha256((principal['user_id'] + ':' + request_id).encode()).hexdigest()[:10]
 
         async def admit():
@@ -98,7 +110,9 @@ class PresentationJobs:
                 spec = {'generation_contract': 'skill-video-v1', 'original_prompt_cn': arguments['source'],
                         'video_duration_sec': arguments['video_duration_sec'],
                         'video_aspect_ratio': arguments['video_aspect_ratio'],
-                        'planner_provider': 'codex_cli', 'video_narration': True,
+                        'planner_provider': 'codex_cli', 'video_narration': arguments.get('video_narration', True),
+                        'video_voice': arguments.get('video_voice', 'melo'),
+                        'video_subtitles': arguments.get('video_subtitles', True),
                         'matched_template': match_template_for_prompt(arguments['source'], arguments['template_id'])}
             else:
                 spec = await compile_cn_request_to_english_spec(arguments['source'], 'ppt',
@@ -135,7 +149,7 @@ class PresentationJobs:
             if task_type == 'video':
                 actual_spec = completed.get('compiled_spec', {})
                 # Bind completion to the admitted source/options before independent file QA/settlement.
-                for key in ('generation_contract', 'original_prompt_cn', 'video_duration_sec', 'video_aspect_ratio', 'planner_provider', 'video_narration', 'matched_template'):
+                for key in ('generation_contract', 'original_prompt_cn', 'video_duration_sec', 'video_aspect_ratio', 'planner_provider', 'video_narration', 'video_voice', 'video_subtitles', 'matched_template'):
                     if actual_spec.get(key) != spec.get(key):
                         raise ValueError('Video completion does not match the admitted request')
                 if not actual_spec.get('video_scenes'):
@@ -203,7 +217,10 @@ class PresentationJobs:
         return await self.create(principal, arguments['source'], arguments['template_id'],
                                  arguments['slide_count'], request_id, task_type=job['task_type'],
                                  video_duration_sec=arguments.get('video_duration_sec', 30),
-                                 video_aspect_ratio=arguments.get('video_aspect_ratio', '16:9'))
+                                 video_aspect_ratio=arguments.get('video_aspect_ratio', '16:9'),
+                                 video_voice=arguments.get('video_voice', 'melo'),
+                                 video_narration=arguments.get('video_narration', True),
+                                 video_subtitles=arguments.get('video_subtitles', True))
 
     async def artifacts(self, principal, job_id):
         job = await self.owned_job(principal, job_id)
@@ -216,6 +233,7 @@ class PresentationJobs:
                 'slide_count': manifest['planned_slides'], 'artifacts': delivery_urls(job_id, manifest),
                 'video': ({'duration_seconds': spec.get('video_duration_sec'),
                            'aspect_ratio': spec.get('video_aspect_ratio'), 'audio': spec.get('video_audio', False),
+                           'subtitles_burned': spec.get('subtitles_burned', False),
                            'narration': spec.get('narration', {})} if job['task_type'] == 'video' else None),
                 'files': manifest['files'], 'download_auth': 'Use the same Bearer credential as MCP; do not put it in URLs.'}
 
@@ -255,10 +273,11 @@ def build_mcp(jobs):
         source: Annotated[str, Field(min_length=1, max_length=100000)],
         request_id: Annotated[str, Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')],
         template_id: str = 'auto', duration_seconds: Annotated[int, Field(ge=6, le=60)] = 30,
-        aspect_ratio: str = '16:9') -> dict:
+        aspect_ratio: str = '16:9', voice: str = 'melo', narration: bool = True,
+        subtitles: bool = True) -> dict:
         """原文生成中文讲解动画MP4，返回独立job_id；时长6–60秒，画幅16:9或9:16，消耗算力。"""
         return await jobs.create(principal(ctx), source, template_id, 0, request_id,
-                                 'video', duration_seconds, aspect_ratio)
+                                 'video', duration_seconds, aspect_ratio, voice, narration, subtitles)
 
     @server.tool()
     async def retry_job(ctx: Context, job_id: str,

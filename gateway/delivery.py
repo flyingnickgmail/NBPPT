@@ -130,6 +130,13 @@ def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path
                 narration = spec.get('narration', {})
                 if spec.get('video_narration') is True and (not audio or narration.get('status') != 'generated'):
                     raise ValueError('Requested narration was not delivered')
+                if spec.get('video_narration') is True and 'video_voice' in spec:
+                    voice = spec['video_voice']
+                    if (narration.get('voice') != voice or
+                            narration.get('provider') != ('melo_tts' if voice == 'melo' else 'kokoro')):
+                        raise ValueError('Requested voice was not delivered')
+                if spec.get('video_subtitles') is True and spec.get('subtitles_burned') is not True:
+                    raise ValueError('Requested burned subtitles were not delivered')
                 if audio and (len(audio) != 1 or audio[0].get('codec_name') != 'aac'
                               or abs(float(audio[0].get('duration', 0)) - expected_duration) > .05):
                     raise ValueError('Audio encoding or duration mismatch')
@@ -177,7 +184,7 @@ def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path
                 if len(blocks) != len(scenes):
                     raise ValueError('Subtitle scene count mismatch')
                 for block, scene in zip(blocks, scenes):
-                    expected_text = scene.get('narration') if audio else scene['title'] + '\n' + scene['body']
+                    expected_text = scene.get('narration') if audio or spec.get('subtitle_content') == 'narration' else scene['title'] + '\n' + scene['body']
                     if not expected_text or expected_text not in html_lib.unescape(block):
                         raise ValueError('Subtitle content differs from storyboard')
                 files.extend([poster, captions])

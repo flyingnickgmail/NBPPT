@@ -6,6 +6,7 @@ import unicodedata
 
 
 LAYOUTS = {"title", "comparison", "process"}
+VIDEO_VOICES = {"melo", "kokoro_female", "kokoro_male"}
 PLAN_FIELDS = {"task_summary_cn", "scenes"}
 SCENE_FIELDS = {"scene_num", "duration_sec", "title", "body", "narration",
                 "source_quotes", "layout", "items"}
@@ -28,6 +29,10 @@ def validate_video_spec(spec: dict) -> dict:
         raise ValueError("视频模板信息必须是对象")
     if "video_narration" in spec and type(spec["video_narration"]) is not bool:
         raise ValueError("视频配音开关必须是布尔值")
+    if spec.get("video_voice", "melo") not in VIDEO_VOICES:
+        raise ValueError("不支持的视频音色")
+    if "video_subtitles" in spec and type(spec["video_subtitles"]) is not bool:
+        raise ValueError("视频字幕开关必须是布尔值")
     provider = spec.get("planner_provider", "codex_cli")
     if provider not in ("codex_cli", "claude_cli"):
         raise ValueError("不支持的视频规划器")
