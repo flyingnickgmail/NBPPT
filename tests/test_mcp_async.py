@@ -38,7 +38,9 @@ def test_async_retries_disconnect_and_ownership(manager, monkeypatch):
         assert {r['job_id'] for r in responses} == {job_id}
         assert balance(manager) == (1940, 60)
         await started.wait()
-        assert (await jobs.status(A, job_id))['status'] == 'RUNNING'
+        running = await jobs.status(A, job_id)
+        assert running['status'] == 'RUNNING'
+        assert (running['credits_held'], running['credits_refunded']) == (60, 0)
         for method in (jobs.status, jobs.artifacts):
             with pytest.raises(ValueError, match='无权'): await method(B, job_id)
         with pytest.raises(ValueError, match='不同内容'):
@@ -47,7 +49,9 @@ def test_async_retries_disconnect_and_ownership(manager, monkeypatch):
             await jobs.artifacts(A, job_id)
         release.set()
         await asyncio.gather(*list(jobs.tasks))
-        assert (await jobs.status(A, job_id))['status'] == 'FAILED'
+        failed = await jobs.status(A, job_id)
+        assert failed['status'] == 'FAILED'
+        assert (failed['credits_frozen'], failed['credits_held'], failed['credits_refunded']) == (60, 0, 60)
         retry = await jobs.create(A, '客户内容', 'auto', 5, 'retry-0001')
         assert retry['status'] == 'FAILED'
         assert balance(manager) == (2000, 0)
@@ -89,6 +93,8 @@ def test_completed_artifacts_rechecked_and_owned(manager):
         spec, manifest = make_delivery(manager.jobs_root / job / 'output', job=job)
         await manager.save_compiled_spec(job, spec)
         await manager.confirm_settle(job, .1, delivery_urls(job, manifest))
+        completed = await jobs.status(A, job)
+        assert (completed['credits_charged'], completed['credits_held'], completed['credits_refunded']) == (42, 0, 18)
         assert (await jobs.artifacts(A, job))['slide_count'] == 2
         (manager.jobs_root / job / 'output/assets/slide_preview_1.png').write_bytes(b'corrupt')
         with pytest.raises(ValueError): await jobs.artifacts(A, job)

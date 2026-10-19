@@ -117,7 +117,7 @@ def build_adapter(config):
 
     @server.tool()
     async def get_job_status(job_id: str) -> dict:
-        """查看任务状态；RUNNING时30秒后再查，COMPLETED后获取产物。"""
+        """查看进度和结算；credits_held为当前占用，credits_refunded为已退金额，credits_frozen为历史预冻结。RUNNING时30秒后再查，完成后获取产物。"""
         return await call_remote(config, 'get_job_status', {'job_id': job_id})
 
     @server.tool()

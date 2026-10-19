@@ -239,6 +239,9 @@ class PresentationJobs:
         job = await self.owned_job(principal, job_id)
         result = {'job_id': job_id, 'status': job['status'], 'task_type': job['task_type'],
                   'credits_charged': job['credits_charged'], 'credits_frozen': job['credits_frozen'],
+                  # Keep the historical reservation field compatible; expose current money state explicitly.
+                  'credits_held': job['credits_frozen'] if job['status'] == 'RUNNING' else 0,
+                  'credits_refunded': job['credits_frozen'] - job['credits_charged'] if job['status'] in ('FAILED', 'COMPLETED') else 0,
                   'created_at': job['created_at'], 'completed_at': job['completed_at']}
         spec = json.loads(job['en_compiled_spec'] or '{}')
         request = spec.get('_request')
@@ -347,7 +350,7 @@ def build_mcp(jobs):
 
     @server.tool()
     async def get_job_status(ctx: Context, job_id: str) -> dict:
-        """查询自己任务的进度和结算状态；RUNNING时30秒后再查。"""
+        """查询自己任务进度与结算；credits_held为当前占用，credits_refunded为已退金额，credits_frozen为历史预冻结。RUNNING时30秒后再查。"""
         return await jobs.status(principal(ctx), job_id)
 
     @server.tool()

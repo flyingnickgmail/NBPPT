@@ -13,16 +13,20 @@
 | `create_presentation` | `source` 完整原文、`request_id` 幂等编号、`template_id`、`slide_count`、可选 `execution_mode=auto/codex_cli/claude_cli`；Claude 须由服务端启用，默认仍为 Codex；立即返回任务编号 |
 | `create_video` | `source`、`request_id`、`template_id`、`duration_seconds`（6–60）、`aspect_ratio`（16:9或9:16）；中文讲解MP4、旁白和字幕 |
 | `retry_job` | 对自己失败且已退款的 PPT/视频，以新的 `request_id` 重试；不会重做组合任务中另一项 |
-| `get_job_status` | 查询当前用户的进度，运行中建议间隔30秒 |
+| `get_job_status` | 查询当前用户的进度与结算，运行中建议间隔30秒 |
 | `get_job_artifacts` | 完成后重新检查摘要，返回文件列表、下载路径 |
 
 页数为0时自动决定，明确页数范围1–60。原文最多10万字。编号8–80位英文字母、数字、下划线或短横线。同一用户、同一编号、相同参数只创建一次、冻结一次；不同参数复用编号报错。失败后同编号仍返回原失败记录，只有明确再次生成时使用新编号。
+
+状态中的 `credits_frozen` 保留最初预冻结金额，供历史记录和旧客户端使用；当前仍占用的金额看 `credits_held`，已退金额看 `credits_refunded`，实际结算看 `credits_charged`。失败退款后的当前占用为0，原预冻结字段不会被清零。
 
 提交接口断开不取消生成。服务正常停止或重启时，中断任务失败并退款；不自动重放生成，不宣称跨重启续跑。后台任务由单个网关进程管理，SQLite 数据库锁拒绝第二个网关启动。Web 的旧流式入口仍在断开时取消，两者行为不同。
 
 旧三个同步 MCP 工具已由上表替代，客户端需刷新工具列表。这是接口变更，不提供旧工具名称兼容。
 
 ## ZCode / 其他桌面客户端
+
+更新连接配置、密钥或工具参数后，在新会话核对工具定义。ZCode 历史会话可能缓存旧连接和旧参数，即使设置页已刷新也未必更新；本次实测旧适配器不包含 `execution_mode`，会丢弃所选引擎。验收必须回读 `get_job_status` 的 `request.execution_mode` 与实际进度消息，确认指定的 Claude 未变为默认 Codex。Claude 个人登录仅向绑定持有人开放，使用该持有人的普通生成密钥，不下发管理员密钥。
 
 本地适配器使用 stdio（标准输入输出）连接，代理到认证 HTTP MCP。密钥放在权限0600的独立配置文件中，不放在提示词或下载网址里。适配器会认证下载并验证每个文件的 SHA256 摘要，然后返回本机绝对路径。
 
