@@ -97,9 +97,11 @@ def build_adapter(config):
         return await call_remote(config, 'list_templates', {})
 
     @server.tool()
-    async def create_presentation(source: str, request_id: str, template_id: str = 'auto', slide_count: int = 0) -> dict:
+    async def create_presentation(source: str, request_id: str, template_id: str = 'auto', slide_count: int = 0,
+                                  execution_mode: str = 'auto') -> dict:
         """将完整原文提交生成PPT，立即返回编号。request_id至少8位，重试必须复用。0页为自动。"""
-        return await call_remote(config, 'create_presentation', {'source': source, 'request_id': request_id, 'template_id': template_id, 'slide_count': slide_count})
+        return await call_remote(config, 'create_presentation', {'source': source, 'request_id': request_id,
+            'template_id': template_id, 'slide_count': slide_count, 'execution_mode': execution_mode})
 
     @server.tool()
     async def create_video(source: str, request_id: str, template_id: str = 'auto',
