@@ -10,7 +10,7 @@
 | 工具 | 作用 |
 | --- | --- |
 | `list_templates` | 列出品牌风格参考，不暴露主机文件路径 |
-| `create_presentation` | `source` 完整原文、`request_id` 幂等编号、`template_id`、`slide_count`、可选 `execution_mode=auto/codex_cli/claude_cli`；Claude 须由服务端启用，默认仍为 Codex；立即返回任务编号 |
+| `create_presentation` | `source` 完整原文、`request_id` 幂等编号、`template_id`、`slide_count`、可选 `execution_mode=auto/codex_cli/claude_cli/claude_codex`；Claude 须由服务端启用并绑定持有人，默认仍为 Codex；立即返回任务编号 |
 | `create_video` | `source`、`request_id`、`template_id`、`duration_seconds`（6–60）、`aspect_ratio`（16:9或9:16）；中文讲解MP4、旁白和字幕 |
 | `retry_job` | 对自己失败且已退款的 PPT/视频，以新的 `request_id` 重试；不会重做组合任务中另一项 |
 | `get_job_status` | 查询当前用户的进度与结算，运行中建议间隔30秒 |
@@ -57,6 +57,12 @@ python -m uvicorn worker.worker_api:app --host 127.0.0.1 --port 18781
 两者需要共享 `workspace/jobs` 文件系统。网关 `.env` 中 `OVERSEAS_WORKER_URL` 对应18781。仅本机浏览器测试时设置 `NBPPT_COOKIE_SECURE=false`，公网必须保持 true 并配置准确 HTTPS `NBPPT_PUBLIC_ORIGIN`。本次本地进程不是开机自启服务；停止后客户端无法提交/查询，已有下载文件仍可打开。
 
 ## 验证与边界
+
+`execution_mode=claude_codex` 使用 Claude 撰写中文核心主张、全篇逻辑、逐页论证、画面文字、讲稿及衔接；验证原文引文、连续页码和内容完整后，再交给 Codex 按 source-image-deck 技能逐页生成图片。客户模板只约束视觉风格。Codex 可设计版式，不能改写或省略策划内容。
+
+组合模式使用一个任务和一次冻结，任一步失败都不交付、不结算；重试保留原文、风格和组合模式，重新执行两阶段。进度依次显示 `outlining`（内容策划）、`illustrating`（绘图）和 `checking`（文件检查）。成功交付图片版 PPTX、网页演示、图片及 `content_outline.md` / `content_plan.json`；文字策划也写入 PPT 备注。文字稿通过同一所有权与摘要检查才能下载，客户端适配器会同时保存它们。
+
+Claude 仍只允许绑定的个人持有人使用，复用唯一凭据、跨进程账号队列与限流熔断；临近令牌到期时，在同一账号锁内由官方客户端执行固定、无工具且最多0.05美元估算预算的登录维护请求，不接触任务原文，维护成本计入原任务预算与用量。刷新失败会暂停调用，须人工处理后恢复；不向其他用户开放个人订阅，也不会失败后静默换引擎。文字结构检查和逐字交接不证明论证深度或生成图片中的中文正确，仍需内容与视觉验收。图片版 PPT 的可见文字不可单独编辑；原生可编辑版本继续使用 `claude_cli`。
 
 测试覆盖正式 SDK 握手和工具调用、提交后断开、并发重试仅一次冻结、越权读取、失败退款、交付文件损坏、下载摘要和路径边界。真实试跑需另外检查全部页面内容与布局。
 

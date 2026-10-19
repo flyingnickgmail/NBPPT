@@ -397,7 +397,7 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             engine = resolve_ppt_engine(req.english_spec.get("generator_engine", req.execution_mode))
             if req.execution_mode != "auto" and req.execution_mode != engine:
                 raise ValueError("PPT 生成引擎与任务约定不一致")
-            if engine == 'claude_cli':
+            if engine in ('claude_cli', 'claude_codex'):
                 from gateway.ppt_contract import require_claude_owner
                 require_claude_owner(req.english_spec.get('account_owner_user_id'))
         except PermissionError as exc:
@@ -418,7 +418,7 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             media_type="text/event-stream",
         )
 
-    if req.execution_mode == "claude_cli":
+    if req.execution_mode in ('claude_cli', 'claude_codex'):
         raise HTTPException(422, "Claude requires the owner-bound native PPT contract")
     if os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() == "true":
         raise HTTPException(422, "Production currently supports isolated Codex PPT generation only")

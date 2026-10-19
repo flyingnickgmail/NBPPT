@@ -188,7 +188,7 @@ def test_real_client_submit_disconnect_retry(live_mcp, monkeypatch, manager):
         release.set()
 
 
-@pytest.mark.parametrize("kind,suffix", [("ppt", "_deck.pptx"), ("video", "_video.mp4"), ("video", "/assets/video_poster.png"), ("video", "/subtitles.vtt")])
+@pytest.mark.parametrize("kind,suffix", [("ppt", "_deck.pptx"), ("ppt", "/content_outline.md"), ("ppt", "/content_plan.json"), ("video", "_video.mp4"), ("video", "/assets/video_poster.png"), ("video", "/subtitles.vtt")])
 def test_download_integrity_and_path_boundary(tmp_path, monkeypatch, kind, suffix):
     import hashlib
     import httpx

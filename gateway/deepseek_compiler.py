@@ -518,6 +518,12 @@ def validate_direct_completion(event: Dict[str, Any], expected_spec=None) -> Dic
         if (spec.get("generator_engine", "codex_cli") != expected_spec.get("generator_engine", "codex_cli")
                 or (expected_spec.get("slide_count") and count != expected_spec["slide_count"])):
             raise RuntimeError("PPT 交付引擎或页数与请求不一致")
+    if spec.get("generator_engine") == "claude_codex":
+        from gateway.content_plan import validate_content_plan, validate_content_handoff
+        plan = validate_content_plan(spec.get("claude_content_plan"), spec)
+        validate_content_handoff(spec["slide_outline"], plan)
+        if not urls.get("content_outline_url") or not urls.get("content_plan_url"):
+            raise RuntimeError("组合模式未交付文字策划")
     return spec
 
 
@@ -534,10 +540,10 @@ async def compile_cn_request_to_english_spec(
     if task_type == "ppt":
         engine = resolve_ppt_engine(extra_params.get("execution_mode", "auto"))
         match = match_template_for_prompt(cn_prompt, extra_params.get("template_id", "auto"))
-        free = engine == "claude_cli" and extra_params.get("template_id", "auto") == "auto"
+        free = engine in ("claude_cli", "claude_codex") and extra_params.get("template_id", "auto") == "auto"
         if free:
-            match = {"template": {"id": "auto", "name": "Claude 自主设计"},
-                     "match_reason_cn": "由 Claude 按内容自主设计，不强制匹配母版"}
+            match = {"template": {"id": "auto", "name": "按内容自由设计" if engine == "claude_codex" else "Claude 自主设计"},
+                     "match_reason_cn": "按内容自主设计，不强制匹配母版"}
         count = int(extra_params.get("slide_count", 0))
         if not cn_prompt.strip() or not 0 <= count <= 60:
             raise ValueError("请输入原文，页数须为 0（自动）或 1–60")
@@ -552,6 +558,8 @@ async def compile_cn_request_to_english_spec(
             "slide_outline": [], "compiler_engine": f"{'Claude' if engine == 'claude_cli' else 'Codex'} 技能直出（等待实际规划）",
             "is_real_llm": False,
         }
+        if engine == "claude_codex":
+            result["compiler_engine"] = "Claude 内容策划 → Codex 图片制作（等待实际执行）"
         if engine == "claude_cli":
             result["presentation_format"] = "native-pptx-v1"
         return result

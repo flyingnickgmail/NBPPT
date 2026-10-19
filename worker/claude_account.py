@@ -76,6 +76,66 @@ async def verify_login(binary, profile):
         await proc.wait()
 
 
+async def ensure_fresh_login(binary, profile, gate):
+    """Lease holder only: let the official client refresh its canonical store.
+
+    No source, tools, hooks or MCP are passed to this small authentication probe.
+    Expired OAuth refresh can fail inside a per-job mount/PID namespace even when
+    the canonical login remains valid. Never copy or rewrite tokens ourselves.
+    """
+    if not profile.credentials.exists():  # macOS official Keychain login.
+        return 0.0
+    value = json.loads(profile.credentials.read_text()).get('claudeAiOauth', {})
+    expiry = value.get('expiresAt')
+    if expiry is None:
+        return 0.0  # Auth status remains authoritative for other official stores.
+    if type(expiry) not in (int, float) or not math.isfinite(expiry):
+        raise ProviderUnavailable('unavailable', 'Claude 登录到期信息无效，暂停调用')
+    if expiry / 1000 > time.time() + 120:
+        return 0.0
+    env = {k:v for k,v in os.environ.items() if k in ('PATH','LANG','TMPDIR')}
+    env.update(HOME=str(profile.home), CLAUDE_CODE_MAX_RETRIES='2', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1')
+    args = [binary, '--safe-mode', '--restricted', '--setting-sources', '',
+            '--no-session-persistence', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+            '--tools', '', '--permission-mode', 'dontAsk', '--model', os.getenv('NBPPT_CLAUDE_MODEL', 'sonnet'),
+            '--max-budget-usd', '.05', '--max-turns', '1', '--output-format', 'stream-json', '--verbose',
+            '--print', 'Reply only OK. Do not use tools.']
+    from worker.claude_generation import stop_cli, result_cost
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(*args, cwd=profile.home, env=env,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT, start_new_session=True, limit=2_000_000)
+        result, size = None, 0
+        async with asyncio.timeout(120):
+            async for line in proc.stdout:
+                size += len(line)
+                if size > 2_000_000:
+                    raise ValueError('Authentication probe output too large')
+                try: event = json.loads(line)
+                except (ValueError, UnicodeDecodeError): continue
+                if not isinstance(event, dict): continue
+                gate.record_event(event)
+                if event.get('type') == 'result': result = event
+            await proc.wait()
+        if proc.returncode: raise ValueError('Authentication probe failed')
+        cost = result_cost(result)
+        # Validate ownership, mode and hardlinks again after official atomic refresh.
+        refreshed = ClaudeProfile.configured()
+        actual = json.loads(refreshed.credentials.read_text()).get('claudeAiOauth', {}).get('expiresAt', 0)
+        if refreshed.account_id != profile.account_id or type(actual) not in (int,float) or not math.isfinite(actual) or actual / 1000 <= time.time() + 120:
+            raise ValueError('Official login was not refreshed')
+        return cost
+    except ProviderUnavailable:
+        await stop_cli(proc, force=True)
+        raise
+    except Exception:
+        gate._write({'state':'blocked', 'reason':'authentication_refresh_failed', 'until':0})
+        raise ProviderUnavailable('blocked', 'Claude 官方登录刷新失败，请持有人检查后恢复；未开始内容生成') from None
+    finally:
+        await stop_cli(proc)
+
+
 class AccountGate:
     @classmethod
     def configured(cls, profile):
@@ -210,7 +270,7 @@ class AccountGate:
         elif event.get("type") == "result" and (event.get("is_error") or event.get("subtype") != "success"):
             # Retain only a classification, never raw provider errors or tokens.
             text = (str(event.get("result", "")) + str(event.get("errors", ""))).lower()
-            if any(x in text for x in ("authentication", "not logged in", "invalid api key", "account_on_hold", "account has been", "forbidden", "401", "403")):
+            if any(x in text for x in ("authentication", "not logged in", "invalid api key", "account_on_hold", "account has been", "forbidden", "401", "403", "refresh oauth token", "refresh your login")):
                 error = "authentication_failed"
             elif any(x in text for x in ("hit your limit", "usage limit", "weekly limit", "quota", "credit balance", "billing_error")):
                 error = "quota_unknown_reset"

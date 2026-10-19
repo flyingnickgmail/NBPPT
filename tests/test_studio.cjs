@@ -300,3 +300,55 @@ test('an old failed jobs cooldown cannot disable retry after the live circuit re
   h.api.set({activeTask:task,capabilities:{delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli']},video:{supported:true}}}});
   await h.api.pollKind('ppt');assert.equal(h.get('retry-ppt').disabled,false);
 });
+
+test('hybrid engine persists through composite submission and shares Claude cooldown', async () => {
+  const calls=[];
+  const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs'){const x=JSON.parse(options.body);calls.push(x);return response({job_id:x.task_type==='ppt'?'ppt_0123456789':'video_abcdef0123'});}
+    if(path==='/api/wallet')return response({user:{credits_available:1800}});
+    return response({status:'RUNNING',stage:'outlining',message:'Claude 正在推演论证'});
+  });
+  const cap={delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli','claude_codex']},video:{supported:true}},providers:{claude_cli:{state:'ready',message:'ready'}}};
+  h.api.set({capabilities:cap});h.api.updateMode('composite');h.get('ppt-engine').value='claude_codex';h.get('source').value=sourceText;
+  h.api.controls();assert.equal(h.get('hybrid-engine-option').disabled,false);
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  assert.equal(calls.find(x=>x.task_type==='ppt').execution_mode,'claude_codex');
+  assert.equal(calls.find(x=>x.task_type==='video').execution_mode,'codex_cli');
+  assert.equal(h.api.get().activeTask.input.execution_mode,'claude_codex');
+  cap.providers.claude_cli.state='cooldown';h.api.controls();
+  assert.equal(h.get('retry-ppt').disabled,true);assert.equal(h.get('ppt-engine').value,'claude_codex');
+});
+
+test('validated hybrid outline is downloadable and cleared on logout', async () => {
+  const job='ppt_0123456789',base=`/artifacts/${job}/`;
+  const h=harness(async(path)=>{
+    if(path==='/api/wallet')return response({user:{credits_available:1940}});
+    if(path.endsWith('/artifacts'))return response({artifacts:{slide_preview_urls:[base+'assets/slide_preview_1.png'],pptx_url:base+'deck.pptx',html_deck_url:base+'deck.html',content_outline_url:base+'content_outline.md'}});
+    return response({status:'COMPLETED',percent:100});
+  });
+  h.api.set();h.api.activateTask({mode:'ppt',input:{source:sourceText,execution_mode:'claude_codex'},jobs:{ppt:job},request_ids:{ppt:'hybrid-outline-test'},submit_errors:{}});await tick();await tick();
+  assert.equal(h.get('outline-download').hidden,false);assert.equal(h.get('outline-download').href,base+'content_outline.md');
+  h.api.clearSession();assert.equal(h.get('outline-download').hidden,true);assert.equal(h.get('outline-download').href,undefined);
+});
+
+test('hybrid outline and image stages highlight their actual progress steps', async () => {
+  let stage='outlining';
+  const h=harness(async path=>path==='/api/wallet'?response({user:{credits_available:940}}):response({status:'RUNNING',stage,percent:stage==='outlining'?32:46,message:stage}));
+  const steps=[h.get('outline-step'),h.get('image-step'),h.get('check-step'),h.get('ready-step')];
+  h.get('ppt-phase-steps').children=steps;
+  h.api.set();h.api.activateTask({mode:'ppt',input:{source:sourceText,execution_mode:'claude_codex'},jobs:{ppt:'ppt_0123456789'},request_ids:{ppt:'hybrid-stage-test'},submit_errors:{}});await tick();
+  assert.equal(steps[0].textContent,'Claude 内容策划');assert.equal(steps[0].className,'active');
+  assert.equal(steps[1].textContent,'Codex 图片制作');
+  stage='illustrating';await h.api.pollKind('ppt');
+  assert.equal(steps[0].className,'done');assert.equal(steps[1].className,'active');
+  assert.equal(h.get('ppt-meter').value,46);
+});
+
+test('MCP-created history tasks restore the engine and full request before rendering progress', async () => {
+  const h=harness(async path=>path==='/api/wallet'?response({user:{credits_available:940}}):response({status:'RUNNING',stage:'outlining',percent:32,request:{source:sourceText,template_id:'auto',slide_count:6,execution_mode:'claude_codex'}}));
+  const steps=[h.get('outline-step'),h.get('image-step')];h.get('ppt-phase-steps').children=steps;
+  h.api.set({capabilities:{delivery_modes:{ppt:{execution_modes:['codex_cli','claude_cli','claude_codex']},video:{supported:true}}}});
+  h.api.activateTask({mode:'ppt',input:{},jobs:{ppt:'ppt_0123456789'},request_ids:{},submit_errors:{}});await tick();
+  assert.equal(h.api.get().activeTask.input.execution_mode,'claude_codex');assert.equal(steps[0].textContent,'Claude 内容策划');
+  assert.match(h.get('request-config').textContent,/6 页.*Claude 策划 → Codex 绘图/);assert.equal(h.get('request-source').textContent,sourceText);
+});

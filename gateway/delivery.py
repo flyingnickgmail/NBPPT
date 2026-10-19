@@ -74,6 +74,10 @@ def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path
                 raise DeliveryError("PPTX page count mismatch")
             if abs(prs.slide_width / prs.slide_height - 16 / 9) > 0.01:
                 raise DeliveryError("PPTX must be widescreen")
+            if spec.get("generator_engine") == "claude_codex" and any(
+                    not page.has_notes_slide or page.notes_slide.notes_text_frame.text != item.get("speaker_notes_cn")
+                    for page, item in zip(prs.slides, spec["slide_outline"])):
+                raise DeliveryError("Claude 讲稿没有完整写入 PPT 备注")
         except Exception as exc:
             raise DeliveryError("Invalid PPTX or page count/aspect ratio") from exc
         expected = [f"assets/slide_preview_{i}.png" for i in range(1, count + 1)]
@@ -97,6 +101,17 @@ def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path
         if refs.sources != expected and refs.sources != embedded:
             raise DeliveryError("HTML must reference every preview in page order")
         files.extend([deck, html])
+        if spec.get("generator_engine") == "claude_codex":
+            from gateway.content_plan import read_plan, validate_content_plan, validate_content_handoff, outline_markdown
+            plan_path = contained_file(root, "content_plan.json")
+            text_path = contained_file(root, "content_outline.md")
+            plan = validate_content_plan(read_plan(plan_path), spec)
+            if plan != spec.get("claude_content_plan"):
+                raise DeliveryError("交付策划与实际 Claude 策划不一致")
+            validate_content_handoff(spec["slide_outline"], plan)
+            if text_path.stat().st_size > 4 * 1024 * 1024 or text_path.read_text(encoding="utf-8") != outline_markdown(plan):
+                raise DeliveryError("文字版缺失或与策划不一致")
+            files.extend([plan_path, text_path])
     if task_type in ("video", "composite"):
         video = contained_file(root, f"{job_id}_video.mp4")
         try:
@@ -219,6 +234,8 @@ def delivery_urls(job_id: str, manifest: dict) -> dict:
     return {
         "pptx_url": next((base + p for p in paths if p.endswith(".pptx")), None),
         "html_deck_url": next((base + p for p in paths if p.endswith(".html")), None),
+        "content_outline_url": base + 'content_outline.md' if 'content_outline.md' in paths else None,
+        "content_plan_url": base + 'content_plan.json' if 'content_plan.json' in paths else None,
         "mp4_url": next((base + p for p in paths if p.endswith(".mp4")), None),
         "video_poster_url": base + 'assets/video_poster.png' if 'assets/video_poster.png' in paths else None,
         "subtitles_url": base + 'subtitles.vtt' if 'subtitles.vtt' in paths else None,

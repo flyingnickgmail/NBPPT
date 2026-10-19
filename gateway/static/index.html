@@ -70,6 +70,7 @@
 <label for="ppt-engine">PPT 生成引擎</label>
 <select id="ppt-engine">
 <option value="codex_cli">Codex · 图片创作</option>
+<option id="hybrid-engine-option" value="claude_codex" disabled>Claude 策划 → Codex 绘图</option>
 <option id="claude-engine-option" value="claude_cli" disabled>Claude · 自由创作</option>
 </select>
 <p id="claude-status" role="status" hidden></p>
@@ -212,6 +213,7 @@
 </div>
 <div class="exports">
 <a id="download" class="secondary" download>下载 PPTX ↓</a>
+<a id="outline-download" class="secondary" download hidden>下载文字策划 ↓</a>
 <a id="html-deck" target="_blank" rel="noopener">打开网页演示 ↗</a>
 </div>
 <p class="note">文件检查通过；内容、数字和图片文字仍需人工复核。</p>
@@ -256,7 +258,7 @@
 <div id="history-list">
 </div>
 </dialog>
-<script type="module" src="/static/studio.js?v=claude-free-20261019">
+<script type="module" src="/static/studio.js?v=claude-hybrid-20261019b">
 </script>
 </body>
 </html>

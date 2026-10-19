@@ -147,7 +147,7 @@ class AsyncCreateJobRequest(BaseModel):
     slide_count: int = Field(default=0, ge=0, le=60)
     request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,80}$")
     task_type: Literal['ppt', 'video'] = 'ppt'
-    execution_mode: Literal['auto', 'codex_cli', 'claude_cli'] = 'auto'
+    execution_mode: Literal['auto', 'codex_cli', 'claude_cli', 'claude_codex'] = 'auto'
     video_duration_sec: int = Field(default=30, ge=6, le=60, strict=True)
     video_aspect_ratio: Literal['16:9', '9:16'] = '16:9'
     video_voice: Literal['melo', 'kokoro_female', 'kokoro_male'] = 'melo'
@@ -439,7 +439,7 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
         from gateway.ppt_contract import resolve_ppt_engine, require_claude_owner
         try:
             resolve_ppt_engine(req.execution_mode)
-            if req.execution_mode == 'claude_cli':
+            if req.execution_mode in ('claude_cli', 'claude_codex'):
                 require_claude_owner(request.state.principal.get('user_id'))
                 await mcp_jobs.require_claude_ready(request.state.principal)
         except (ValueError, PermissionError) as exc:
@@ -463,7 +463,7 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
 
             # Step 1: Match Template
             match_preview = match_template_for_prompt(req.prompt_cn, req.template_id)
-            if req.execution_mode == 'claude_cli' and req.template_id == 'auto':
+            if req.execution_mode in ('claude_cli', 'claude_codex') and req.template_id == 'auto':
                 match_preview = {'template': {'id': 'auto', 'name': 'Claude 自主设计'},
                                  'match_reason_cn': 'Claude 按内容自主设计，不强制匹配母版'}
             matched_tpl = match_preview["template"]
@@ -488,8 +488,8 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
                 else "正在梳理【逻辑大纲 + Claude 图形化动效分镜脚本】"
             )
             if task_type == "ppt":
-                engine_desc = "Claude 自由创作" if req.execution_mode == "claude_cli" else "Codex 技能直出"
-                role_desc = "保留完整原文与客户风格，由生成代理统一规划和绘图"
+                engine_desc = "Claude 策划 → Codex 绘图" if req.execution_mode == "claude_codex" else "Claude 自由创作" if req.execution_mode == "claude_cli" else "Codex 技能直出"
+                role_desc = "Claude 先写出完整论证与讲稿，再交给 Codex 绘图" if req.execution_mode == "claude_codex" else "保留完整原文与客户风格，由生成代理统一规划和绘图"
             yield f"data: {json.dumps({'type': 'progress', 'pct': 20, 'job_id': job_id, 'message_cn': f'[主控 Agent 强逻辑推理] 调用 {engine_desc}，{role_desc}...'}, ensure_ascii=False)}\n\n"
 
             en_spec = await compile_cn_request_to_english_spec(
@@ -506,14 +506,14 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
                 },
             )
             en_spec["requested_slide_count"] = req.slide_count
-            if req.execution_mode == 'claude_cli':
+            if req.execution_mode in ('claude_cli', 'claude_codex'):
                 en_spec['account_owner_user_id'] = request.state.principal['user_id']
             await billing.save_compiled_spec(job_id, en_spec)
 
             summary_cn = en_spec.get("task_summary_cn", "")
             real_badge = "原文已保留，等待生成代理创作" if en_spec.get('generation_contract') == 'skill-direct-v1' else ("真实大模型推理完成" if en_spec.get("is_real_llm") else "结构化推理完成")
             if en_spec.get("generation_contract") == "skill-direct-v1":
-                real_badge = "原文已准备，等待 Codex 实际规划"
+                real_badge = "原文已准备，等待实际内容规划与创作"
             msg_spec = f"[{real_badge}] {summary_cn} · 引擎：{en_spec.get('compiler_engine')}"
             yield f"data: {json.dumps({'type': 'spec_compiled', 'pct': 26, 'job_id': job_id, 'message_cn': msg_spec, 'en_spec': en_spec}, ensure_ascii=False)}\n\n"
 
@@ -631,6 +631,9 @@ async def serve_job_artifact(job_id: str, file_path: str, request: Request):
         media_type = "image/png"
     elif suffix == ".vtt":
         media_type = "text/vtt; charset=utf-8"
+    elif suffix in (".md", ".json"):
+        media_type = "text/plain; charset=utf-8" if suffix == ".md" else "application/json"
+        headers["Content-Disposition"] = f'attachment; filename="{target.name}"'
 
     return FileResponse(target, media_type=media_type, headers=headers)
 

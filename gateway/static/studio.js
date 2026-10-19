@@ -2,6 +2,8 @@ const $ = id => document.getElementById(id);
 const sample = '为项目负责人制作客户问题协同试点汇报。以下是合成测试数据：本周收集12个问题，已解决7个，5个待处理。说明当前进展、销售与产品团队如何分工，以及下周逐项确认责任人与验收标准的计划。不要编造收益或客户案例。';
 const kindsFor = mode => mode === 'composite' ? ['ppt', 'video'] : [mode];
 const labels = {ppt:'PPT', video:'视频'};
+const usesClaude = engine => ['claude_cli', 'claude_codex'].includes(engine);
+const engineLabel = engine => engine === 'claude_codex' ? 'Claude 策划 → Codex 绘图' : engine === 'claude_cli' ? 'Claude 自由创作' : 'Codex 图片创作';
 let authenticated = false, busy = false, userId = '', canGenerate = false, ready = false;
 let mode = 'ppt', capabilities = null, activeTask = null, epoch = 0;
 const timers = {ppt:null, video:null}, sequences = {ppt:0, video:0};
@@ -14,6 +16,7 @@ function clearDelivery(kind) {
   deliveries[kind] = null;
   if (kind === 'ppt') {
     $('slide').removeAttribute('src'); $('download').removeAttribute('href'); $('html-deck').removeAttribute('href');
+    $('outline-download').hidden = true; $('outline-download').removeAttribute('href');
     $('thumbnails').replaceChildren(); $('ppt-panel').hidden = true;
   } else {
     $('video-player').pause(); $('video-player').removeAttribute('src'); $('video-player').removeAttribute('poster');
@@ -59,16 +62,17 @@ function controls() {
   const status = capabilities?.providers?.claude_cli;
   const paused = Boolean(status && status.state !== 'ready');
   for (const name of ['ppt','video','composite']) $(`mode-${name}`).disabled = busy || (name !== 'ppt' && capabilities?.delivery_modes.video.supported !== true);
-  $('submit').disabled = !allowed || (mode !== 'video' && $('ppt-engine').value === 'claude_cli' && paused); $('account').disabled = busy;
+  $('submit').disabled = !allowed || (mode !== 'video' && usesClaude($('ppt-engine').value) && paused); $('account').disabled = busy;
   $('ppt-engine').disabled = busy || !ready;
   $('claude-engine-option').disabled = !supported || paused;
-  if ($('ppt-engine').value === 'claude_cli' && !supported) $('ppt-engine').value = 'codex_cli';
+  $('hybrid-engine-option').disabled = !capabilities?.delivery_modes.ppt.execution_modes?.includes('claude_codex') || paused;
+  if (usesClaude($('ppt-engine').value) && !capabilities?.delivery_modes.ppt.execution_modes?.includes($('ppt-engine').value)) $('ppt-engine').value = 'codex_cli';
   $('claude-status').hidden = !supported;
   $('claude-status').textContent = status ? status.message + (status.retry_after_seconds ? `（至少等待 ${status.retry_after_seconds} 秒）` : '') : '仅供绑定持有人使用；自动风格由 Claude 自主设计。';
   $('claude-check').hidden = !supported; $('claude-check').disabled = busy || !ready;
   $('submit').textContent = busy ? '正在提交…' : authenticated ? (!canGenerate ? '当前凭据仅可查看任务' : mode === 'composite' ? '开始生成 PPT＋视频 →' : `开始生成${labels[mode]} →`) : '登录后开始生成 →';
   for (const kind of ['ppt','video']) $(`retry-${kind}`).disabled = !allowed;
-  if (paused && activeTask?.input.execution_mode === 'claude_cli') $('retry-ppt').disabled = true;
+  if (paused && usesClaude(activeTask?.input.execution_mode)) $('retry-ppt').disabled = true;
 }
 function updateMode(next) {
   if (busy) return;
@@ -79,9 +83,9 @@ function updateMode(next) {
   $('ppt-options').hidden = mode === 'video'; $('video-options').hidden = mode === 'ppt'; updateSummary(); updateCost(); controls();
 }
 function updateSummary() {
-  const claude = $('ppt-engine').value === 'claude_cli';
-  const parts = [claude && $('style').value === 'auto' && mode !== 'video' ? 'Claude 自主设计' : $('style').selectedOptions[0].text];
-  if (mode !== 'video') parts.push($('pages').selectedOptions[0].text, claude ? 'Claude 自由创作' : 'Codex 图片创作');
+  const claude = usesClaude($('ppt-engine').value);
+  const parts = [claude && $('style').value === 'auto' && mode !== 'video' ? ($('ppt-engine').value === 'claude_codex' ? '按内容自由设计' : 'Claude 自主设计') : $('style').selectedOptions[0].text];
+  if (mode !== 'video') parts.push($('pages').selectedOptions[0].text, engineLabel($('ppt-engine').value));
   if (mode !== 'ppt') parts.push(`${$('video-duration').value} 秒`, $('video-ratio').value);
   $('config-summary').textContent = parts.join(' · ');
 }
@@ -113,6 +117,9 @@ function renderPpt(result, jobId) {
     button.onclick = () => showSlide(i); $('thumbnails').append(button);
   });
   $('download').href = safeArtifact(links.pptx_url, jobId); $('html-deck').href = safeArtifact(links.html_deck_url, jobId);
+  $('outline-download').hidden = !links.content_outline_url;
+  if (links.content_outline_url) $('outline-download').href = safeArtifact(links.content_outline_url, jobId);
+  else $('outline-download').removeAttribute('href');
   $('ppt-panel').hidden = false; showSlide(0); updatePreview();
 }
 function renderVideo(result, jobId) {
@@ -131,16 +138,21 @@ function updatePreview() {
   if (deliveries.video) parts.push('视频已通过文件验收');
   $('preview-empty').hidden = parts.length > 0; $('preview-context').textContent = parts.length ? `${parts.join('；')}。内容仍需人工审阅。` : '';
 }
-function stageStep(stage) { return ({queued:-1,planning:0,generating:1,rendering:1,checking:2,ready:3})[stage] ?? -1; }
+function stageStep(stage) { return ({queued:-1,planning:0,outlining:0,generating:1,illustrating:1,rendering:1,checking:2,ready:3})[stage] ?? -1; }
 function renderTrack(kind) {
   const state = states[kind], retry = $(`retry-${kind}`), meter = $(`${kind}-meter`), steps = $(`${kind}-phase-steps`);
+  if (kind === 'ppt' && steps.children.length >= 2) {
+    const hybrid = activeTask.input.execution_mode === 'claude_codex';
+    steps.children[0].textContent = hybrid ? 'Claude 内容策划' : '整理内容';
+    steps.children[1].textContent = hybrid ? 'Codex 图片制作' : '生成页面';
+  }
   if (!activeTask.jobs[kind]) {
     const error = activeTask.submit_errors[kind]; $(`${kind}-progress`).textContent = error ? `提交未确认：${error}` : '正在提交任务…';
     $(`${kind}-billing`).textContent = error ? '尚未确认冻结；再次提交会复用同一编号，不会创建重复任务。' : '等待服务器确认任务。';
     retry.textContent = `重新提交${labels[kind]}`; retry.hidden = !error || !canGenerate; meter.hidden = true;
     [...steps.children].forEach(node => { node.className = error ? 'error' : ''; node.setAttribute('aria-current','false'); }); return;
   }
-  if (!state) { $(`${kind}-progress`).textContent = '正在获取真实状态…'; retry.hidden = true; meter.hidden = false; meter.removeAttribute('value'); return; }
+  if (!state) { $(`${kind}-billing`).textContent = '正在核对本项冻结与结算状态…'; [...steps.children].forEach(node => { node.className = ''; node.setAttribute('aria-current','false'); }); $(`${kind}-progress`).textContent = '正在获取真实状态…'; retry.hidden = true; meter.hidden = false; meter.removeAttribute('value'); return; }
   const step = stageStep(state.stage);
   [...steps.children].forEach((node,i) => { node.className = state.status === 'FAILED' && i === Math.max(step,0) ? 'error' : i < step ? 'done' : i === step ? 'active' : ''; node.setAttribute('aria-current', i === step ? 'step' : 'false'); });
   $(`${kind}-progress`).textContent = state.status === 'COMPLETED' ? '文件检查通过，可以预览和下载。内容仍需人工复核。' : (state.message || '任务执行中，等待服务器更新');
@@ -166,13 +178,16 @@ function resetTaskView() {
   states.ppt = states.video = null; clearDelivery('ppt'); clearDelivery('video'); $('preview-empty').hidden = false; $('preview-context').textContent = '';
   for (const kind of ['ppt','video']) { const shown = activeTask && kindsFor(activeTask.mode).includes(kind); $(`${kind}-track`).hidden = !shown; if (shown) renderTrack(kind); }
 }
+function renderRequestSummary() {
+  $('request-source').textContent = activeTask.input.source || '';
+  $('request-config').textContent = activeTask.mode === 'ppt' ? `${activeTask.input.template_id || 'auto'} · ${activeTask.input.slide_count || '自动'} 页` : activeTask.mode === 'video' ? `${activeTask.input.video_duration_sec || 30} 秒 · ${activeTask.input.video_aspect_ratio || '16:9'}` : `PPT ${activeTask.input.slide_count || '自动'} 页 · 视频 ${activeTask.input.video_duration_sec || 30} 秒 · ${activeTask.input.video_aspect_ratio || '16:9'}`;
+  if (activeTask.mode !== 'video' && usesClaude(activeTask.input.execution_mode)) $('request-config').textContent += ' · ' + engineLabel(activeTask.input.execution_mode);
+}
 function activateTask(task) {
   const normalized = normalizeTask(task); if (!normalized) throw new Error('无效的任务记录');
   epoch++; clearTimers(); activeTask = normalized; persistActive(); resetTaskView();
   const ids = kindsFor(activeTask.mode).map(kind => activeTask.jobs[kind]).filter(Boolean);
-  $('task-summary').textContent = ids.length ? ids.join(' · ') : '任务提交状态待确认'; $('request-source').textContent = activeTask.input.source || '';
-  $('request-config').textContent = activeTask.mode === 'ppt' ? `${activeTask.input.template_id || 'auto'} · ${activeTask.input.slide_count || '自动'} 页` : activeTask.mode === 'video' ? `${activeTask.input.video_duration_sec || 30} 秒 · ${activeTask.input.video_aspect_ratio || '16:9'}` : `PPT ${activeTask.input.slide_count || '自动'} 页 · 视频 ${activeTask.input.video_duration_sec || 30} 秒 · ${activeTask.input.video_aspect_ratio || '16:9'}`;
-  if (activeTask.mode !== 'video' && activeTask.input.execution_mode === 'claude_cli') $('request-config').textContent += ' · Claude 自由创作';
+  $('task-summary').textContent = ids.length ? ids.join(' · ') : '任务提交状态待确认'; renderRequestSummary();
   showTask(); $('task-title').focus(); updateAggregate(); refreshWallet().catch(() => {});
   for (const kind of kindsFor(activeTask.mode)) if (activeTask.jobs[kind]) pollKind(kind);
 }
@@ -182,8 +197,13 @@ async function pollKind(kind) {
   try {
     const status = await api(`/api/jobs/${jobId}`);
     if (taskEpoch !== epoch || sequence !== sequences[kind] || activeTask?.jobs[kind] !== jobId) return;
+    if (status.request) {
+      const fields = kind === 'ppt' ? ['source','template_id','slide_count','execution_mode'] : ['source','template_id','video_duration_sec','video_aspect_ratio','video_voice','video_narration','video_subtitles'];
+      for (const key of fields) if (Object.hasOwn(status.request, key)) activeTask.input[key] = status.request[key];
+      persistActive(); renderRequestSummary(); controls();
+    }
     states[kind] = status; renderTrack(kind); updateAggregate();
-    if (kind === 'ppt' && status.provider && activeTask.input.execution_mode === 'claude_cli') {
+    if (kind === 'ppt' && status.provider && usesClaude(activeTask.input.execution_mode)) {
       await refreshClaude(); // A failed job is historical; only live account state controls retry.
     }
     if (status.status === 'COMPLETED' && !deliveries[kind]) {
@@ -281,7 +301,7 @@ $('brief').onsubmit = async event => {
   event.preventDefault(); if (busy || !authenticated || !ready || !canGenerate) return;
   const requestedMode = mode;
   const input = {source:$('source').value.trim(), template_id:$('style').value, slide_count:Number($('pages').value), video_duration_sec:Number($('video-duration').value), video_aspect_ratio:$('video-ratio').value, video_voice:$('video-voice').value || 'melo', video_narration:$('video-narration').value !== 'off', video_subtitles:$('video-captions').value !== 'off'};
-  if ($('ppt-engine').value === 'claude_cli') input.execution_mode = 'claude_cli';
+  if (usesClaude($('ppt-engine').value)) input.execution_mode = $('ppt-engine').value;
   if (input.source.length < 20) return notice('请至少输入20个字的原文与要求。');
   if (mode !== 'ppt' && (!Number.isInteger(input.video_duration_sec) || input.video_duration_sec < 6 || input.video_duration_sec > 60)) return notice('视频时长须为 6–60 秒整数。');
   busy = true; controls(); notice();
@@ -311,7 +331,7 @@ $('history-open').onclick = async () => {
   } catch(error) { $('history-list').textContent = error.message; }
 };
 $('history-close').onclick = () => $('history').close(); $('back-edit').onclick = showComposer; $('resume-task').onclick = showTask;
-$('refresh').onclick = () => { notice(); if (activeTask) { kindsFor(activeTask.mode).forEach(kind => activeTask.jobs[kind] && pollKind(kind)); if (activeTask.input.execution_mode === 'claude_cli') refreshClaude(); } };
+$('refresh').onclick = () => { notice(); if (activeTask) { kindsFor(activeTask.mode).forEach(kind => activeTask.jobs[kind] && pollKind(kind)); if (usesClaude(activeTask.input.execution_mode)) refreshClaude(); } };
 async function refreshClaude() {
   const authEpoch = epoch;
   try {

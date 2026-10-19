@@ -59,7 +59,7 @@ async def download_artifacts(config, result):
         for entry in result['files']:
             name = entry['path']
             allowed = (name in (f'{job_id}_video.mp4', 'assets/video_poster.png', 'subtitles.vtt')) if job_id.startswith('video_') else (
-                name in (f'{job_id}_deck.pptx', f'{job_id}_deck_interactive.html') or
+                name in (f'{job_id}_deck.pptx', f'{job_id}_deck_interactive.html', 'content_outline.md', 'content_plan.json') or
                 re.fullmatch(r'assets/slide_preview_[1-9][0-9]*\.png', name))
             if not allowed:
                 raise ValueError('Unexpected artifact path')
@@ -99,7 +99,7 @@ def build_adapter(config):
     @server.tool()
     async def create_presentation(source: str, request_id: str, template_id: str = 'auto', slide_count: int = 0,
                                   execution_mode: str = 'auto') -> dict:
-        """将完整原文提交生成PPT，立即返回编号。request_id至少8位，重试必须复用。0页为自动。"""
+        """将完整原文提交生成PPT，立即返回编号。request_id至少8位，重试必须复用。0页为自动。execution_mode=claude_codex 使用 Claude 写内容、Codex 画图，附文字稿；claude_cli 为原生PPT；auto 为 Codex。Claude 模式仅供绑定持有人。"""
         return await call_remote(config, 'create_presentation', {'source': source, 'request_id': request_id,
             'template_id': template_id, 'slide_count': slide_count, 'execution_mode': execution_mode})
 

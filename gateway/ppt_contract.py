@@ -23,13 +23,13 @@ def available_ppt_engines(user_id=None):
     engines = ["codex_cli"]
     owner = os.getenv("NBPPT_CLAUDE_OWNER_USER_ID", "").strip()
     if os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() == "true" and owner and (user_id is None or user_id == owner):
-        engines.append("claude_cli")
+        engines.extend(["claude_cli", "claude_codex"])
     return engines
 
 
 def resolve_ppt_engine(value="auto"):
     engine = "codex_cli" if value == "auto" else value
-    if engine not in ("codex_cli", "claude_cli"):
+    if engine not in ("codex_cli", "claude_cli", "claude_codex"):
         raise ValueError("不支持的 PPT 生成引擎")
     if engine not in available_ppt_engines():
         raise ValueError("服务器尚未启用 Claude PPT 生成")

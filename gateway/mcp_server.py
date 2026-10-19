@@ -76,7 +76,7 @@ class PresentationJobs:
         if task_type == 'video' and execution_mode not in ('auto', 'codex_cli'):
             raise ValueError('视频尚未开放 Claude 执行，不能替换成其他引擎')
         engine = resolve_ppt_engine(execution_mode) if task_type == 'ppt' else 'codex_cli'
-        if engine == 'claude_cli':
+        if engine in ('claude_cli', 'claude_codex'):
             require_claude_owner(principal.get('user_id'))
         if task_type == 'video':
             from gateway.video_contract import VIDEO_VOICES
@@ -94,7 +94,7 @@ class PresentationJobs:
         if template_id != "auto" and template_id not in {t['id'] for t in list_available_templates()}:
             raise ValueError("未知模板，请先调用list_templates")
         arguments = {"source": source, "template_id": template_id, "slide_count": slide_count}
-        if engine == 'claude_cli':
+        if engine in ('claude_cli', 'claude_codex'):
             arguments['execution_mode'] = engine
         if task_type == 'video':
             arguments.update(task_type='video', slide_count=0, video_duration_sec=video_duration_sec,
@@ -114,7 +114,7 @@ class PresentationJobs:
                     if existing.get('request_hash') != fingerprint:
                         raise ValueError("request_id已用于不同内容，请为新任务选择新编号")
                     return await self.status(principal, job_id)
-                if engine == 'claude_cli':
+                if engine in ('claude_cli', 'claude_codex'):
                     await self.require_claude_ready(principal)
                 handed_off = False
                 try:
@@ -123,7 +123,7 @@ class PresentationJobs:
                     # Persist the original request before compilation so a failed compile can be retried.
                     await self.billing.save_compiled_spec(job_id, {"_request": arguments})
                     self.progress[job_id] = {"percent": 0, "stage": "queued", "message": "已接收，等待生成"}
-                    execution = {**arguments, 'account_owner_user_id': principal['user_id']} if engine == 'claude_cli' else arguments
+                    execution = {**arguments, 'account_owner_user_id': principal['user_id']} if engine in ('claude_cli', 'claude_codex') else arguments
                     self.track(self.execute(job_id, execution))
                     handed_off = True
                     return {"job_id": job_id, "status": "RUNNING", "poll_after_seconds": 30,
@@ -156,7 +156,7 @@ class PresentationJobs:
                 spec = await compile_cn_request_to_english_spec(arguments['source'], 'ppt',
                     {"slide_count": arguments['slide_count'], "template_id": arguments['template_id'], "execution_mode": arguments.get('execution_mode', 'codex_cli')})
                 spec['requested_slide_count'] = arguments['slide_count']
-                if arguments.get('execution_mode') == 'claude_cli':
+                if arguments.get('execution_mode') in ('claude_cli', 'claude_codex'):
                     spec['account_owner_user_id'] = arguments['account_owner_user_id']
             spec['_request'] = {k: v for k, v in arguments.items() if k != 'account_owner_user_id'}
             await self.billing.save_compiled_spec(job_id, spec)
@@ -327,7 +327,7 @@ def build_mcp(jobs):
         request_id: Annotated[str, Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')],
         template_id: str = 'auto', slide_count: Annotated[int, Field(ge=0, le=60)] = 0,
         execution_mode: str = 'auto') -> dict:
-        """提交完整原文生成PPT，立即返回job_id。0页表示由内容决定。消耗平台算力点。"""
+        """提交完整原文生成PPT，立即返回job_id。0页表示由内容决定。消耗平台算力点。execution_mode=claude_codex 为 Claude 内容策划＋Codex 图片PPT并附文字稿；claude_cli 为原生PPT；auto 为 Codex。Claude 模式仅供绑定持有人。"""
         return await jobs.create(principal(ctx), source, template_id, slide_count, request_id,
                                  execution_mode=execution_mode)
 
