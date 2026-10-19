@@ -99,7 +99,7 @@ def test_permission_toggle_denies_rest_mcp_retry_and_legacy_before_freeze(manage
             assert (await client.patch('/api/wallet/keys/'+key_id, headers=admin,json={'allow_claude':True})).status_code == 200
             await jobs.require_claude_access(principal)
             other_id = hashlib.sha256(KEY_B.encode()).hexdigest()
-            assert (await client.patch('/api/wallet/keys/'+other_id,headers=admin,json={'allow_claude':True})).status_code == 403
+            assert (await client.patch('/api/wallet/keys/'+other_id,headers=admin,json={'allow_claude':True})).status_code == 200
             assert (await client.patch('/api/wallet/keys/'+key_id,headers=admin,json={'allow_claude':'false'})).status_code == 422
             registry = (await client.get('/api/wallet/keys',headers=admin)).json()
             assert KEY_A not in json.dumps(registry) and ADMIN not in json.dumps(registry)
@@ -115,7 +115,6 @@ def test_create_endpoint_strict_defaults_rollback_and_revocation(manager, monkey
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),base_url='https://test',headers={'Authorization':'Bearer '+ADMIN}) as client:
             for body in ({'allow_claude':'true'}, {'daily_credit_limit':True}, {'daily_credit_limit':0}, {'name':' '}):
                 assert (await client.post('/api/wallet/keys',json=body)).status_code in (400,422)
-            assert (await client.post('/api/wallet/keys',json={'allow_claude':True})).status_code == 403
             with sqlite3.connect(manager.db_path) as db:
                 assert db.execute('SELECT count(*) FROM users').fetchone()[0] == 3
             response=await client.post('/api/wallet/keys',json={'name':'隔离客户'})

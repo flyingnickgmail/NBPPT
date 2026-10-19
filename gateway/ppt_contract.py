@@ -11,18 +11,25 @@ class ProviderUnavailable(ValueError):
         self.status_code = 429 if state == "cooldown" else 503
 
 
-def require_claude_owner(user_id):
+def claude_runtime_owner():
+    """Identify the server's provider login, independently of the paying tenant."""
     owner = os.getenv("NBPPT_CLAUDE_OWNER_USER_ID", "").strip()
     if os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() != "true" or not owner:
-        raise ValueError("Claude 尚未配置个人持有人绑定，入口保持关闭")
+        raise ValueError("服务器尚未配置 Claude 运行账号，入口保持关闭")
+    return owner
+
+
+def require_claude_owner(user_id):
+    """Private worker check: the gateway must bind the configured provider login."""
+    owner = claude_runtime_owner()
     if not user_id or user_id != owner:
-        raise PermissionError("这份 Claude 个人登录只允许持有人使用")
+        raise PermissionError("Claude 运行账号绑定无效")
 
 
-def available_ppt_engines(user_id=None, *, allow_claude=True):
+def available_ppt_engines(*, allow_claude=True):
     engines = ["codex_cli"]
     owner = os.getenv("NBPPT_CLAUDE_OWNER_USER_ID", "").strip()
-    if allow_claude and os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() == "true" and owner and (user_id is None or user_id == owner):
+    if allow_claude and os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() == "true" and owner:
         engines.extend(["claude_cli", "claude_codex"])
     return engines
 

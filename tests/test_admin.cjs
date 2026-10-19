@@ -74,10 +74,10 @@ test('late create response after logout cannot restore a secret key',async()=>{
   await assert.rejects(request,/会话已切换/);assert.equal(h.api.get().issued,null);assert.equal(h.get('new-secret').value,'');
 });
 
-test('current admin cannot be downgraded or revoked and unrelated Claude stays unavailable',()=>{
+test('current admin is protected and Claude switch is independent of runtime owner identity',()=>{
   const h=harness();h.api.set({keys:[{...key,is_current:true,scope:'admin'}]});h.api.openEditor(key.key_id);
-  assert.equal(h.get('edit-scope').disabled,true);assert.equal(h.get('revoke').disabled,true);assert.equal(h.get('edit-claude').disabled,true);
-  assert.match(h.get('claude-detail').textContent,/没有适用/);
+  assert.equal(h.get('edit-scope').disabled,true);assert.equal(h.get('revoke').disabled,true);assert.equal(h.get('edit-claude').disabled,false);
+  assert.match(h.get('claude-detail').textContent,/按密钥独立授权/);
 });
 
 test('successful create retains its secret when subsequent list refresh fails',async()=>{
@@ -89,4 +89,15 @@ test('successful create retains its secret when subsequent list refresh fails',a
   await h.get('create-form').onsubmit({preventDefault(){}});
   assert.equal(h.get('new-secret').value,'test-only-secret');assert.equal(h.get('secret-dialog').open,true);
   assert.equal(h.get('create-dialog').open,false);assert.match(h.get('notice').textContent,/操作已成功/);
+});
+
+test('new independent key can be created with Claude enabled without sharing its account',async()=>{
+  let request;
+  const h=harness(async(path,options)=>{
+    if(options?.method==='POST'){request=JSON.parse(options.body);return response({new_key:{api_key:'test-secret',user_id:'independent-new',credits_available:0,daily_credit_limit:240,allow_claude:true}});}
+    return response(path.endsWith('/actions')?{actions:[]}:{keys:[]});
+  });
+  h.get('create-name').value='独立 Claude';h.get('create-credits').value='0';h.get('create-limit').value='240';h.get('create-scope').value='generate';h.get('create-claude').checked=true;
+  await h.get('create-form').onsubmit({preventDefault(){}});
+  assert.equal(request.allow_claude,true);assert.equal(request.initial_credits,0);assert.match(h.get('new-account-meta').textContent,/Claude 允许/);
 });

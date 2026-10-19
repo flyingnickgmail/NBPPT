@@ -16,7 +16,7 @@ from gateway.config import get_runtime_settings, TASK_FREEZE_CREDITS
 from gateway.deepseek_compiler import compile_cn_request_to_english_spec, validate_direct_completion
 from gateway.delivery import verify_published, delivery_urls, safe_job_id
 from gateway.template_registry import list_available_templates, match_template_for_prompt
-from gateway.ppt_contract import resolve_ppt_engine, require_claude_owner, ProviderUnavailable
+from gateway.ppt_contract import resolve_ppt_engine, claude_runtime_owner, ProviderUnavailable
 
 
 class PresentationJobs:
@@ -41,11 +41,11 @@ class PresentationJobs:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def require_claude_access(self, principal):
-        require_claude_owner(principal.get('user_id'))
         from gateway.auth import authenticate_key
         current = await authenticate_key(self.billing, principal.get('api_key', ''))
         if current['user_id'] != principal.get('user_id') or not current['allow_claude']:
             raise PermissionError('当前密钥未获准使用 Claude')
+        return claude_runtime_owner()
 
     async def claude_status(self, principal):
         await self.require_claude_access(principal)
@@ -132,7 +132,7 @@ class PresentationJobs:
                     # Persist the original request before compilation so a failed compile can be retried.
                     await self.billing.save_compiled_spec(job_id, {"_request": arguments})
                     self.progress[job_id] = {"percent": 0, "stage": "queued", "message": "已接收，等待生成"}
-                    execution = {**arguments, 'account_owner_user_id': principal['user_id']} if engine in ('claude_cli', 'claude_codex') else arguments
+                    execution = {**arguments, 'account_owner_user_id': claude_runtime_owner()} if engine in ('claude_cli', 'claude_codex') else arguments
                     self.track(self.execute(job_id, execution))
                     handed_off = True
                     return {"job_id": job_id, "status": "RUNNING", "poll_after_seconds": 30,
@@ -336,7 +336,7 @@ def build_mcp(jobs):
         request_id: Annotated[str, Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')],
         template_id: str = 'auto', slide_count: Annotated[int, Field(ge=0, le=60)] = 0,
         execution_mode: str = 'auto') -> dict:
-        """提交完整原文生成PPT，立即返回job_id。0页表示由内容决定。消耗平台算力点。execution_mode=claude_codex 为 Claude 内容策划＋Codex 图片PPT并附文字稿；claude_cli 为原生PPT；auto 为 Codex。Claude 模式仅供绑定持有人。"""
+        """提交完整原文生成PPT，立即返回job_id。0页表示由内容决定。消耗平台算力点。execution_mode=claude_codex 为 Claude 内容策划＋Codex 图片PPT并附文字稿；claude_cli 为原生PPT；auto 为 Codex。Claude 模式需要管理员为当前密钥授权；历史与额度按产品账户隔离。"""
         return await jobs.create(principal(ctx), source, template_id, slide_count, request_id,
                                  execution_mode=execution_mode)
 

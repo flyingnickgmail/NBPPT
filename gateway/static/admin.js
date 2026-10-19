@@ -54,7 +54,7 @@ function controls() {
     const inactive = !selected.is_active;
     for (const field of $('settings-form').querySelectorAll('input,select,textarea,button')) field.disabled = busy || inactive;
     $('edit-scope').disabled = busy || inactive || selected.scope === 'admin';
-    $('edit-claude').disabled = busy || inactive || (!selected.claude_eligible && !selected.allow_claude);
+    $('edit-claude').disabled = busy || inactive;
     $('revoke').disabled = busy || inactive || selected.is_current;
   }
 }
@@ -72,7 +72,7 @@ function renderKeys() {
     const daily = document.createElement('td'); daily.append(cell('strong', `${number(key.daily_spent)} / ${number(key.effective_daily_limit)} 点`), cell('small', `设置上限 ${number(key.daily_credit_limit)} 点`));
     const permission = document.createElement('td');
     permission.append(cell('strong', key.scope === 'admin' ? '管理员' : key.scope === 'read' ? '只读成果' : '允许生成'),
-      cell('small', key.allow_claude ? (key.claude_eligible ? 'Claude 已允许' : 'Claude 无可用授权') : 'Claude 已关闭'));
+      cell('small', key.allow_claude ? (key.claude_configured ? 'Claude 已允许' : 'Claude 已允许 · 服务未启用') : 'Claude 已关闭'));
     const actions = document.createElement('td'), button = cell('button', key.is_active ? '管理' : '查看'); button.type = 'button';
     button.setAttribute('aria-label', `管理 ${key.name}`); button.onclick = () => { if (!busy) openEditor(key.key_id); }; actions.append(button);
     row.append(identity,balance,daily,permission,actions); return row;
@@ -125,7 +125,7 @@ function renderSelected(reset) {
   $('shared-note').textContent = key.account_key_count > 1 ? `此账户有 ${key.account_key_count} 把密钥，共享历史、余额和每日累计尝试点数。余额调整将作用于整个账户。` : '此密钥归属独立账户，历史与余额不会与其他账户共享。';
   $('selected-balance').textContent = number(key.credits_available); $('selected-frozen').textContent = number(key.credits_frozen);
   $('daily-detail').textContent = `今日已尝试 ${number(key.daily_spent)} 点；当前实际日上限 ${number(key.effective_daily_limit)} 点。修改上限不会重置今日用量。`;
-  $('claude-detail').textContent = key.claude_eligible ? '已满足个人持有人绑定。允许后可使用 Claude 原生及组合模式；只读权限仍不能生成。' : '当前没有适用的 Claude 授权。独立账户不能借用其他账户的个人登录。';
+  $('claude-detail').textContent = '按密钥独立授权，历史与额度仍属于当前账户。只读权限不能生成；Claude 的供应商用量与冷却由服务器统一管理。' + (key.claude_configured ? '' : ' 当前服务器尚未启用 Claude，可先设置权限。');
   $('revoke-note').textContent = key.is_current ? '当前管理员登录密钥受保护，不能在此停用。' : key.is_active ? '停用不可恢复，网页会话同时失效；已受理的任务继续完成，账户账目保留。' : '这把密钥已停用；账目保留，可继续核查或调整账户可用点数。';
   if (reset) { $('edit-name').value = key.name; $('edit-limit').value = key.daily_credit_limit; $('edit-scope').value = key.scope; $('edit-claude').checked = key.allow_claude; }
 }
@@ -148,10 +148,10 @@ $('create-open').onclick = () => { if (busy) return; if (!pending.has('create'))
 $('create-form').onsubmit = event => {
   event.preventDefault();
   return runForm('create-error',async () => {
-    const values = {name:$('create-name').value.trim(), initial_credits:Number($('create-credits').value), daily_credit_limit:Number($('create-limit').value), scope:$('create-scope').value, allow_claude:false};
+    const values = {name:$('create-name').value.trim(), initial_credits:Number($('create-credits').value), daily_credit_limit:Number($('create-limit').value), scope:$('create-scope').value, allow_claude:$('create-claude').checked};
     const result = await mutate('create','/api/admin/keys','POST',values);
     issued = result.new_key; $('new-secret').value = issued.api_key;
-    $('new-account-meta').textContent = `账户 ${issued.user_id} · 初始点数 ${number(issued.credits_available)} · 日上限 ${number(issued.daily_credit_limit)} 点 · Claude 关闭`;
+    $('new-account-meta').textContent = `账户 ${issued.user_id} · 初始点数 ${number(issued.credits_available)} · 日上限 ${number(issued.daily_credit_limit)} 点 · Claude ${issued.allow_claude ? '允许' : '关闭'}`;
     $('create-dialog').close(); $('secret-dialog').showModal(); await afterWrite();
   });
 };

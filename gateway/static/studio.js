@@ -68,7 +68,7 @@ function controls() {
   $('hybrid-engine-option').disabled = !capabilities?.delivery_modes.ppt.execution_modes?.includes('claude_codex') || paused;
   if (usesClaude($('ppt-engine').value) && !capabilities?.delivery_modes.ppt.execution_modes?.includes($('ppt-engine').value)) $('ppt-engine').value = 'codex_cli';
   $('claude-status').hidden = !supported;
-  $('claude-status').textContent = status ? status.message + (status.retry_after_seconds ? `（至少等待 ${status.retry_after_seconds} 秒）` : '') : '仅供绑定持有人使用；自动风格由 Claude 自主设计。';
+  $('claude-status').textContent = status ? status.message + (status.retry_after_seconds ? `（至少等待 ${status.retry_after_seconds} 秒）` : '') : '需要管理员为当前密钥开启 Claude；自动风格由 Claude 自主设计。';
   $('claude-check').hidden = !supported; $('claude-check').disabled = busy || !ready;
   $('submit').textContent = busy ? '正在提交…' : authenticated ? (!canGenerate ? '当前凭据仅可查看任务' : mode === 'composite' ? '开始生成 PPT＋视频 →' : `开始生成${labels[mode]} →`) : '登录后开始生成 →';
   for (const kind of ['ppt','video']) $(`retry-${kind}`).disabled = !allowed;

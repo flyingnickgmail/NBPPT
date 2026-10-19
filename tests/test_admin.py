@@ -127,14 +127,14 @@ def test_invalid_adjustments_are_atomic_and_strict(manager,body):
     asyncio.run(run())
 
 
-def test_admin_cannot_grant_claude_to_unbound_accounts_or_reset_daily_usage(manager,monkeypatch):
+def test_admin_grants_claude_per_key_without_resetting_daily_usage(manager,monkeypatch):
     monkeypatch.setenv('NBPPT_CLAUDE_ENABLED','true');monkeypatch.setenv('NBPPT_CLAUDE_OWNER_USER_ID','a')
     async def run():
         key_a=hashlib.sha256(KEY_A.encode()).hexdigest();key_b=hashlib.sha256(KEY_B.encode()).hexdigest()
         await manager.try_freeze_credits(KEY_A,'ppt_1111111111','ppt','test',60)
         await manager.cancel_refund('ppt_1111111111','test')
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),base_url='https://test',headers=ADMIN_HEADERS) as client:
-            assert (await client.patch('/api/admin/keys/'+key_b,json={'request_id':'claude-grant-0001','allow_claude':True})).status_code==403
+            assert (await client.patch('/api/admin/keys/'+key_b,json={'request_id':'claude-grant-0001','allow_claude':True})).status_code==200
             assert (await client.patch('/api/admin/keys/'+key_a,json={'request_id':'claude-revoke-001','allow_claude':False,'daily_credit_limit':40})).status_code==200
             row=next(k for k in (await client.get('/api/admin/keys')).json()['keys'] if k['key_id']==key_a)
             assert row['daily_spent']==60 and row['effective_daily_limit']==40 and not row['allow_claude']

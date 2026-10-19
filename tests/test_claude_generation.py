@@ -85,7 +85,7 @@ def test_invalid_budgets_rejected(budget):
 
 
 @pytest.mark.parametrize('user,key', [('b', KEY_B), ('admin', 'test-admin-'+'c'*40)])
-def test_subscription_cannot_be_shared_with_other_users_or_admin(manager, enabled, user, key):
+def test_keys_without_claude_permission_are_denied_including_admin(manager, enabled, user, key):
     async def run():
         jobs = PresentationJobs(manager)
         principal = {'user_id': user, 'api_key': key, 'scope': 'admin' if user == 'admin' else 'generate'}

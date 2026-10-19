@@ -223,7 +223,7 @@ def production_capabilities(principal=None):
     return {
         "ppt": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"],
                 "progress": True, "preview_after_validation": True, "retry": True,
-                "execution_modes": available_ppt_engines((principal or {}).get('user_id'), allow_claude=(principal or {}).get('allow_claude', False))},
+                "execution_modes": available_ppt_engines(allow_claude=(principal or {}).get('allow_claude', False))},
         "video": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["video"],
                   "progress": True, "preview_after_validation": True, "retry": True,
                   "planner_providers": {"codex_cli": True, "claude_cli": False},
@@ -626,7 +626,8 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
             )
             en_spec["requested_slide_count"] = req.slide_count
             if req.execution_mode in ('claude_cli', 'claude_codex'):
-                en_spec['account_owner_user_id'] = request.state.principal['user_id']
+                from gateway.ppt_contract import claude_runtime_owner
+                en_spec['account_owner_user_id'] = claude_runtime_owner()
             await billing.save_compiled_spec(job_id, en_spec)
 
             summary_cn = en_spec.get("task_summary_cn", "")

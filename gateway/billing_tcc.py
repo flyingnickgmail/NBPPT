@@ -235,23 +235,20 @@ class BillingManager:
                 if not key or not key[1]:
                     raise ValueError('原请求的密钥已停用，不会重新创建')
                 return {**previous, 'api_key':key[0]}
-            # A permission flag cannot authorize another tenant to borrow personal OAuth.
-            if allow_claude:
-                raise PermissionError('独立账户尚无适用的 Claude 授权，不能借用个人持有人的登录')
             new_key = f"sk-mcp-{secrets.token_urlsafe(32)}"
             user_id = str(uuid.uuid4())
             ts = now_iso()
             await db.execute("INSERT INTO users (id,phone_or_email,tier,credits_available,credits_frozen,created_at) VALUES (?,?,'studio',?,0,?)",
                              (user_id, f'account-{user_id}@local.invalid', initial_credits, ts))
             await db.execute(
-                "INSERT INTO mcp_api_keys (api_key,user_id,name,daily_credit_limit,is_active,created_at,scope,allow_claude) VALUES (?,?,?,?,1,?,?,0)",
-                (new_key, user_id, key_name.strip(), daily_credit_limit, ts, scope),
+                "INSERT INTO mcp_api_keys (api_key,user_id,name,daily_credit_limit,is_active,created_at,scope,allow_claude) VALUES (?,?,?,?,1,?,?,?)",
+                (new_key, user_id, key_name.strip(), daily_credit_limit, ts, scope, int(allow_claude)),
             )
             if initial_credits:
                 await db.execute("INSERT INTO credit_ledger(user_id,job_id,action,amount,balance_after,note,created_at) VALUES (?,?,'ADMIN_ADJUST',?,?,?,?)",
                                  (user_id,'admin_'+request_id,initial_credits,initial_credits,f'管理员 {actor} 创建账户时分配',ts))
             result = {'key_id': hashlib.sha256(new_key.encode()).hexdigest(), 'user_id': user_id,
-                      'name': key_name.strip(), 'scope': scope, 'allow_claude': False,
+                      'name': key_name.strip(), 'scope': scope, 'allow_claude': allow_claude,
                       'daily_credit_limit': daily_credit_limit, 'credits_available': initial_credits, 'created_at': ts}
             await self._save_admin_action(db, actor, request_id, 'CREATE_KEY', user_id, fingerprint, result)
             await db.commit()
@@ -302,7 +299,8 @@ class BillingManager:
             row.update(key_id=hashlib.sha256(raw.encode()).hexdigest(), api_key='***'+raw[-4:], allow_claude=bool(row['allow_claude']))
             row['is_current'] = secrets.compare_digest(raw,current_api_key)
             row['effective_daily_limit'] = min(row['daily_credit_limit'],int(os.getenv('NBPPT_DAILY_CREDITS','1200')))
-            row['claude_eligible'] = os.getenv('NBPPT_CLAUDE_ENABLED','false').lower()=='true' and row['user_id']==os.getenv('NBPPT_CLAUDE_OWNER_USER_ID','').strip()
+            row['claude_eligible'] = bool(row['is_active'])
+            row['claude_configured'] = os.getenv('NBPPT_CLAUDE_ENABLED','false').lower()=='true' and bool(os.getenv('NBPPT_CLAUDE_OWNER_USER_ID','').strip())
         return rows
 
     async def update_managed_key(self, current_api_key, key_id, values, request_id=None):
@@ -326,9 +324,6 @@ class BillingManager:
             if not active:raise ValueError('Key is revoked')
             if scope=='admin' and 'scope' in values:
                 raise PermissionError('管理员密钥的管理权限不能在此降级')
-            if values.get('allow_claude'):
-                from gateway.ppt_contract import require_claude_owner
-                require_claude_owner(user)
             for column,value in values.items():
                 await db.execute(f'UPDATE mcp_api_keys SET {column}=? WHERE api_key=?',(value.strip() if column=='name' else value,raw))
             result={'key_id':key_id,'user_id':user,**values}
@@ -415,8 +410,8 @@ class BillingManager:
             if row['scope'] not in ('admin', 'generate'):
                 raise PermissionError('Credential scope does not allow generation')
             if require_claude:
-                from gateway.ppt_contract import require_claude_owner
-                require_claude_owner(row['user_id'])
+                from gateway.ppt_contract import claude_runtime_owner
+                claude_runtime_owner()
                 if not row['allow_claude']:
                     raise PermissionError('当前密钥未获准使用 Claude')
             async with db.execute("SELECT count(*), sum(user_id=?) FROM media_jobs WHERE status='RUNNING'", (row['user_id'],)) as cur:

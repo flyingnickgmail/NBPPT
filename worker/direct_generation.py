@@ -175,7 +175,10 @@ async def stop_process(proc):
             await asyncio.wait_for(proc.wait(), 5)
         except (ProcessLookupError, asyncio.TimeoutError):
             if proc.returncode is None:
-                os.killpg(proc.pid, signal.SIGKILL)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # The process can exit before asyncio reaps it.
                 await proc.wait()
 
 

@@ -29,7 +29,7 @@ Ubuntu 24.04 安装 `nbppt-bwrap.apparmor` 至 `/etc/apparmor.d/nbppt-bwrap` 并
 
 保持 Codex 为默认引擎。Claude 路径采用英文任务指令，只交给模型完整原文、页数和客户显式选择的品牌参考。自动风格不强制套用 ABU9 或统一版式，不预先规定逐页内容和 SVG 骨架。模型自行构思并输出原生 `draft/presentation.pptx`。可信宿主重新打开实际 PPTX，用 LibreOffice/Poppler 离线渲染每页，生成与 PPTX 相同的预览和网页；不执行模型生成的 HTML/JS，不用模板或其他模型兜底。原生文字和形状保持可编辑，图片本身不能变成可编辑对象。
 
-**个人订阅仅开放给绑定持有人。** 网关和 worker 均须设置 `NBPPT_CLAUDE_ENABLED=true`、`NBPPT_CLAUDE_OWNER_USER_ID=<真实用户ID>`；其他用户和管理员都不能借用其订阅。CLI 估算美元用量不代表订阅实际扣款或剩余额度。面向其他客户的商业服务需要另外确认供应商条款和适用认证，不可通过共享 Pro/Max 凭据开放。参考 [官方使用与合规说明](https://code.claude.com/docs/en/legal-and-compliance)。本路径不开放 Claude 视频。
+**产品账户与 Claude 运行账号分离。** 网关和 worker 均须设置 `NBPPT_CLAUDE_ENABLED=true`、`NBPPT_CLAUDE_OWNER_USER_ID=<服务器运行账号标识>`。该标识只绑定唯一供应商登录及内部 worker 调用，不再用它限制产品账户 ID；管理员可为每把独立密钥设置 `allow_claude`。产品账户仍独立持有历史、产物、余额与日尝试额度，运行账号的实际供应商用量、锁和冷却则共用。应用权限不代表供应商独立额度或额外许可，部署方仍须确认账户用途的适用授权；CLI 估算金额不代表实际订阅扣款或余额。本路径不开放 Claude 视频。
 
 **发布前必须另行完成的运行时验收：** 安装官方 Claude Code 至 `/usr`、`libreoffice-impress`、`poppler-utils`、`fontconfig`、`fonts-noto-cjk`、`bubblewrap`、`socat`。以实际 systemd 服务账号验证受限登录、嵌套 Bash 沙箱、中文字体和一次真实 PPTX→PDF→PNG；依赖缺失、隔离不可用、登录失效均失败关闭。worker 配置 `CLAUDE_BIN=/usr/bin/claude`、`NBPPT_CLAUDE_MODEL=sonnet`、`NBPPT_CLAUDE_HOME=/var/lib/nbppt-worker`、`NBPPT_ACCOUNT_STATE_DIR=/var/lib/nbppt-worker/account-state`（0700）。`NBPPT_PPT_PYTHON=/opt/NBPPT/.venv/bin/python`，可显式指定 `NBPPT_SOFFICE`、`NBPPT_PDFTOPPM`。保持 `NBPPT_REQUIRE_ISOLATION=true`。任务目录必须在登录 HOME 外；生产默认 `/opt/NBPPT/workspace/jobs` 满足要求，macOS 本地可在两端设置同一私有 `NBPPT_JOBS_ROOT=/tmp/nbppt-jobs`。写权限拒绝无法被嵌套允许规则撤销，不可为了在 HOME 内生成而取消凭据保护。`--restricted` 不读取用户转发配置；预检和实际调用采用同一设置边界，不以普通 `auth status` 代替验证。
 
@@ -37,7 +37,7 @@ Ubuntu 24.04 安装 `nbppt-bwrap.apparmor` 至 `/etc/apparmor.d/nbppt-bwrap` 并
 
 组合模式 `claude_codex` 先由 Claude 输出经过结构与原文引用检查的内容策划，再交给 Codex 生成图片并封装 PPT；独立的 `claude_cli` 原生可编辑模式继续保留。文字稿和结构化策划进入同一交付清单和所有权校验，完整讲稿写入 PPT 备注。
 
-**独立账户与密钥权限：** 管理员 `POST /api/wallet/keys`，请求 `{"name":"客户名称","daily_credit_limit":240,"allow_claude":false}`，现在总是创建独立账户（余额0、无历史、generate权限），不再挂在管理员账户下；密钥仅在创建响应中返回，私下保存。`GET /api/wallet/keys` 返回管理员管理清单，只有末四位和不可逆 `key_id`，不返回原始密钥。管理员可 `PATCH /api/wallet/keys/{key_id}`，请求 `{"allow_claude":false}` 关闭 Claude；设为 `true` 还必须满足现有个人持有人绑定，不能向无适用授权的独立账户共享 Pro/Max 登录。初次数据库迁移只保留已经绑定持有人现有密钥的权限，其余默认关闭；后续重启不会重新开启已关闭的权限。网页能力列表、提供方状态、MCP、异步与旧流式提交、重试均检查权限，冻结算力的同一事务再次检查，已受理任务不追溯取消。撤销独立账户密钥会同时撤销其网页会话。旧的同账户密钥仍共享该账户历史和余额，不自动拆分已有任务；新隔离交付必须使用新建独立账户。没有自动充值或余额转移，原有账户账目保持原状。
+**独立账户与密钥权限：** 管理员 `POST /api/wallet/keys`，请求 `{"name":"客户名称","daily_credit_limit":240,"allow_claude":false}`，现在总是创建独立账户（余额0、无历史、generate权限），不再挂在管理员账户下；密钥仅在创建响应中返回，私下保存。`GET /api/wallet/keys` 返回管理员管理清单，只有末四位和不可逆 `key_id`，不返回原始密钥。管理员可 `PATCH /api/wallet/keys/{key_id}`，请求 `{"allow_claude":false}` 关闭 Claude；设为 `true` 允许这把密钥通过服务器 Claude 服务生成，无需与运行账号标识相同。初次数据库迁移只保留已经绑定持有人现有密钥的权限，其余默认关闭；后续重启不会重新开启已关闭的权限。网页能力列表、提供方状态、MCP、异步与旧流式提交、重试均检查权限，冻结算力的同一事务再次检查，已受理任务不追溯取消。撤销独立账户密钥会同时撤销其网页会话。旧的同账户密钥仍共享该账户历史和余额，不自动拆分已有任务；新隔离交付必须使用新建独立账户。没有自动充值或余额转移，原有账户账目保持原状。
 
 到期登录维护在共享账号锁内执行：仅临近 OAuth 到期时，使用官方客户端、唯一凭据、受限设置和空工具列表发送固定确认指令，不将业务原文交给宿主维护进程。最多0.05美元估算预算从原任务预算中扣除；维护失败暂停后续调用，不自行登录、复制令牌或换账号。任务内容继续在原来的隔离沙箱中生成。已观察到隔离任务在令牌过期时刷新失败、宿主官方调用成功；这项维护规避该故障，不将其未经证实地归因为并发，也不承诺供应商授权永远有效。
 
@@ -94,8 +94,10 @@ Certbot >=5.4 支持 IP 证书。使用 webroot + shortlived profile 为服务�
 
 - 新建独立账户与密钥，选择生成/只读权限、每日尝试上限及初始算力点；初始点数是管理员手工分配，不代表付款。
 - 按账户增减可用点数，填写原因；写入原算力账本，冻结点数不变，余额不能为负。多个旧密钥归属同一账户时，共享余额与累计日用量；概况按账户去重。
-- 管理密钥名称、生成/只读权限、日上限、Claude开关；仍需满足个人持有人绑定，不能给新独立账户借用别人的登录。修改上限不清空当日累计尝试。
+- 管理密钥名称、生成/只读权限、日上限、Claude开关；每把密钥可独立开关，无需复用同一产品账户。服务器 Claude 未启用时也可预设权限，但实际提交仍要求运行服务可用。修改上限不清空当日累计尝试。
 - 停用密钥会撤销其网页会话，保留账户账目；当前管理员不能停用自己，管理权限不能通过该界面降级或授予普通密钥。
 - 管理操作记录不保存完整密钥。创建结果请私下保存，清单仅显示末四位。新建密钥可下载客户端连接配置，关闭弹窗或退出登录会清除页面中的明文。
 
 接口为 `GET/POST /api/admin/keys`、`PATCH /api/admin/keys/{key_id}`、`POST /api/admin/keys/{key_id}/credits`（`delta`、`note`）、`POST /api/admin/keys/{key_id}/revoke`、`GET /api/admin/actions`。写请求均需唯一 `request_id`；同请求重发返回原结果，编号被用于不同操作则拒绝。编号与管理记录在同一事务保存，避免网络丢失响应造成重复分配。浏览器中结果未确认时应保留原参数再提交；刷新数据按钮保留待核对的编号，整页重新载入前须先核查操作记录。Cookie（浏览器会话）写请求必须同源；不能使用普通生成密钥管理额度或给自己授权。
+
+运行账号绑定由网关从服务器配置生成，不接受客户端的 `account_owner_user_id`、租户 ID 或授权标记覆盖。任务 ID、账目和产物所有权始终来自真实认证账户；允许 Claude 不会转移或合并账户。关闭权限对新提交与失败重试即时生效，已受理任务继续执行。
