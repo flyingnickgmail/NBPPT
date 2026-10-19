@@ -19,6 +19,7 @@ workspace/data/runtime_settings.json
 # Generated Runtime Job Artifacts
 workspace/jobs/
 workspace/cdn_storage/
+workspace/acceptance-*/
 
 # Third-party heavy PPT template repositories (cloned on demand)
 worker/external_ppt_skills/

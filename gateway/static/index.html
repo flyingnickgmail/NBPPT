@@ -70,8 +70,10 @@
 <label for="ppt-engine">PPT 生成引擎</label>
 <select id="ppt-engine">
 <option value="codex_cli">Codex · 图片创作</option>
-<option id="claude-engine-option" value="claude_cli" disabled>Claude · 矢量排版</option>
+<option id="claude-engine-option" value="claude_cli" disabled>Claude · 自由创作</option>
 </select>
+<p id="claude-status" role="status" hidden></p>
+<button id="claude-check" type="button" hidden>检查 Claude 账号状态</button>
 </div>
 <div class="config-row">
 <label for="pages">PPT 页数</label>
@@ -254,7 +256,7 @@
 <div id="history-list">
 </div>
 </dialog>
-<script type="module" src="/static/studio.js?v=claude-ppt-20261019">
+<script type="module" src="/static/studio.js?v=claude-free-20261019">
 </script>
 </body>
 </html>

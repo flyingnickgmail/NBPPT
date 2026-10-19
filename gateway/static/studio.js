@@ -35,7 +35,13 @@ async function api(path, options = {}) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && requestEpoch === epoch) { clearSession(); login(); }
-    throw new Error(typeof body.detail === 'string' ? body.detail : `请求失败（${response.status}），请稍后重试。`);
+    if (requestEpoch === epoch && body.detail?.provider_state && capabilities) {
+      capabilities.providers ||= {};
+      capabilities.providers.claude_cli = {state:body.detail.provider_state, message:body.detail.message,
+        retry_after_seconds:body.detail.retry_after_seconds || 0};
+      controls();
+    }
+    throw new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message || `请求失败（${response.status}），请稍后重试。`);
   }
   return body;
 }
@@ -49,13 +55,20 @@ function showComposer() {
 }
 function controls() {
   const allowed = authenticated && ready && canGenerate && !busy;
+  const supported = capabilities?.delivery_modes.ppt.execution_modes?.includes('claude_cli');
+  const status = capabilities?.providers?.claude_cli;
+  const paused = Boolean(status && status.state !== 'ready');
   for (const name of ['ppt','video','composite']) $(`mode-${name}`).disabled = busy || (name !== 'ppt' && capabilities?.delivery_modes.video.supported !== true);
-  $('submit').disabled = !allowed; $('account').disabled = busy;
+  $('submit').disabled = !allowed || (mode !== 'video' && $('ppt-engine').value === 'claude_cli' && paused); $('account').disabled = busy;
   $('ppt-engine').disabled = busy || !ready;
-  $('claude-engine-option').disabled = !capabilities?.delivery_modes.ppt.execution_modes?.includes('claude_cli');
-  if ($('ppt-engine').value === 'claude_cli' && $('claude-engine-option').disabled) $('ppt-engine').value = 'codex_cli';
+  $('claude-engine-option').disabled = !supported || paused;
+  if ($('ppt-engine').value === 'claude_cli' && !supported) $('ppt-engine').value = 'codex_cli';
+  $('claude-status').hidden = !supported;
+  $('claude-status').textContent = status ? status.message + (status.retry_after_seconds ? `（至少等待 ${status.retry_after_seconds} 秒）` : '') : '仅供绑定持有人使用；自动风格由 Claude 自主设计。';
+  $('claude-check').hidden = !supported; $('claude-check').disabled = busy || !ready;
   $('submit').textContent = busy ? '正在提交…' : authenticated ? (!canGenerate ? '当前凭据仅可查看任务' : mode === 'composite' ? '开始生成 PPT＋视频 →' : `开始生成${labels[mode]} →`) : '登录后开始生成 →';
   for (const kind of ['ppt','video']) $(`retry-${kind}`).disabled = !allowed;
+  if (paused && activeTask?.input.execution_mode === 'claude_cli') $('retry-ppt').disabled = true;
 }
 function updateMode(next) {
   if (busy) return;
@@ -66,8 +79,9 @@ function updateMode(next) {
   $('ppt-options').hidden = mode === 'video'; $('video-options').hidden = mode === 'ppt'; updateSummary(); updateCost(); controls();
 }
 function updateSummary() {
-  const parts = [$('style').selectedOptions[0].text];
-  if (mode !== 'video') parts.push($('pages').selectedOptions[0].text, $('ppt-engine').value === 'claude_cli' ? 'Claude 矢量排版' : 'Codex 图片创作');
+  const claude = $('ppt-engine').value === 'claude_cli';
+  const parts = [claude && $('style').value === 'auto' && mode !== 'video' ? 'Claude 自主设计' : $('style').selectedOptions[0].text];
+  if (mode !== 'video') parts.push($('pages').selectedOptions[0].text, claude ? 'Claude 自由创作' : 'Codex 图片创作');
   if (mode !== 'ppt') parts.push(`${$('video-duration').value} 秒`, $('video-ratio').value);
   $('config-summary').textContent = parts.join(' · ');
 }
@@ -158,6 +172,7 @@ function activateTask(task) {
   const ids = kindsFor(activeTask.mode).map(kind => activeTask.jobs[kind]).filter(Boolean);
   $('task-summary').textContent = ids.length ? ids.join(' · ') : '任务提交状态待确认'; $('request-source').textContent = activeTask.input.source || '';
   $('request-config').textContent = activeTask.mode === 'ppt' ? `${activeTask.input.template_id || 'auto'} · ${activeTask.input.slide_count || '自动'} 页` : activeTask.mode === 'video' ? `${activeTask.input.video_duration_sec || 30} 秒 · ${activeTask.input.video_aspect_ratio || '16:9'}` : `PPT ${activeTask.input.slide_count || '自动'} 页 · 视频 ${activeTask.input.video_duration_sec || 30} 秒 · ${activeTask.input.video_aspect_ratio || '16:9'}`;
+  if (activeTask.mode !== 'video' && activeTask.input.execution_mode === 'claude_cli') $('request-config').textContent += ' · Claude 自由创作';
   showTask(); $('task-title').focus(); updateAggregate(); refreshWallet().catch(() => {});
   for (const kind of kindsFor(activeTask.mode)) if (activeTask.jobs[kind]) pollKind(kind);
 }
@@ -168,6 +183,9 @@ async function pollKind(kind) {
     const status = await api(`/api/jobs/${jobId}`);
     if (taskEpoch !== epoch || sequence !== sequences[kind] || activeTask?.jobs[kind] !== jobId) return;
     states[kind] = status; renderTrack(kind); updateAggregate();
+    if (kind === 'ppt' && status.provider && activeTask.input.execution_mode === 'claude_cli') {
+      await refreshClaude(); // A failed job is historical; only live account state controls retry.
+    }
     if (status.status === 'COMPLETED' && !deliveries[kind]) {
       const result = await api(`/api/jobs/${jobId}/artifacts`);
       if (taskEpoch !== epoch || sequence !== sequences[kind] || activeTask?.jobs[kind] !== jobId) return;
@@ -293,9 +311,19 @@ $('history-open').onclick = async () => {
   } catch(error) { $('history-list').textContent = error.message; }
 };
 $('history-close').onclick = () => $('history').close(); $('back-edit').onclick = showComposer; $('resume-task').onclick = showTask;
-$('refresh').onclick = () => { notice(); if (activeTask) kindsFor(activeTask.mode).forEach(kind => activeTask.jobs[kind] && pollKind(kind)); };
+$('refresh').onclick = () => { notice(); if (activeTask) { kindsFor(activeTask.mode).forEach(kind => activeTask.jobs[kind] && pollKind(kind)); if (activeTask.input.execution_mode === 'claude_cli') refreshClaude(); } };
+async function refreshClaude() {
+  const authEpoch = epoch;
+  try {
+    const status = await api('/api/providers/claude/status');
+    if (authEpoch !== epoch || !authenticated) return;
+    capabilities.providers ||= {}; capabilities.providers.claude_cli = status;
+    controls();
+  } catch(error) { if (authEpoch === epoch) notice(error.message); }
+}
+$('claude-check').onclick = refreshClaude;
 $('source').oninput = () => { $('count').textContent = `${$('source').value.length} 字`; }; $('example').onclick = () => { $('source').value = sample; $('source').oninput(); $('source').focus(); };
-for (const id of ['style','pages','ppt-engine','video-duration','video-ratio']) $(id).onchange = updateSummary;
+for (const id of ['style','pages','ppt-engine','video-duration','video-ratio']) $(id).onchange = () => { updateSummary(); controls(); };
 for (let i=1;i<=5;i++) { const b = document.createElement('button'); b.type='button'; b.setAttribute('aria-label',`查看样例第${i}页`); b.setAttribute('aria-pressed',String(i===3)); const img=document.createElement('img'); img.src=`/static/samples/slide_preview_${i}.png`; img.alt=''; b.append(img); b.onclick=()=> { $('gallery-main').src=img.src; $('gallery-main').alt=`已有样例第${i}页`; $('gallery-count').textContent=`${i} / 5`; [...$('gallery-picks').children].forEach(c=>c.setAttribute('aria-pressed',String(c===b))); }; $('gallery-picks').append(b); }
 $('slide').onerror = () => notice('PPT预览图片加载失败，请刷新状态或重新登录。'); $('video-player').onerror = () => notice('视频预览加载失败，请刷新状态或下载文件检查。');
 updateMode('ppt');

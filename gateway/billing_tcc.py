@@ -26,7 +26,7 @@ def now_iso() -> str:
 class BillingManager:
     def __init__(self, db_path: str = DATABASE_PATH, jobs_root=None):
         self.db_path = db_path
-        self.jobs_root = pathlib.Path(jobs_root or pathlib.Path(__file__).resolve().parent.parent / "workspace/jobs")
+        self.jobs_root = pathlib.Path(jobs_root or os.getenv('NBPPT_JOBS_ROOT') or pathlib.Path(__file__).resolve().parent.parent / "workspace/jobs")
         self._initialized = False
 
     async def initialize(self):

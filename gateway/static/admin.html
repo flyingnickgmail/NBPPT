@@ -686,17 +686,17 @@
           <span class="text-xs font-semibold" style="color: var(--text-primary);">执行账号与并发设置</span>
           <label class="flex items-center gap-2 text-xs font-medium cursor-pointer" style="color: var(--status-ok-text);">
             <input id="cfgAccountSafeMode" type="checkbox" checked class="rounded" />
-            <span>启用单并发串行锁与拟人间隔</span>
+            <span>旧版执行间隔设置（不控制 Claude 强制账号锁）</span>
           </label>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
           <div class="p-2.5 rounded-lg border" style="background-color: var(--bg-surface); border-color: var(--border-hairline);">
-            <div class="font-medium" style="color: var(--text-primary);">1. 静态住宅代理出站 (防机房 IP 封禁)</div>
-            <p class="text-[11px] mt-0.5" style="color: var(--text-muted);">将海外 VPS 上的 `claude`/`codex` 流量绑定至海外本土家庭宽带 IP。</p>
+            <div class="font-medium" style="color: var(--text-primary);">1. 可选出站网络配置</div>
+            <p class="text-[11px] mt-0.5" style="color: var(--text-muted);">旧版兼容配置；Claude 自由创作不读取此代理，不承诺降低账号封禁风险。</p>
           </div>
           <div class="p-2.5 rounded-lg border" style="background-color: var(--bg-surface); border-color: var(--border-hairline);">
-            <div class="font-medium" style="color: var(--text-primary);">2. 单账号串行队列锁 (`Semaphore = 1`)</div>
-            <p class="text-[11px] mt-0.5" style="color: var(--text-muted);">严禁同一账号并发拉起多个无头进程，100% 模拟真人单终端操作节奏。</p>
+            <div class="font-medium" style="color: var(--text-primary);">2. Claude 账号强制串行与限流暂停</div>
+            <p class="text-[11px] mt-0.5" style="color: var(--text-muted);">受控入口按同一账号跨进程排队；限流暂停并保留状态。其他设备和未受控客户端不在本机锁范围内。</p>
           </div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
@@ -1276,7 +1276,7 @@
       });
       closeModelSettingsModal();
       await refreshHealthAndWallet();
-      appendLog("账号防封策略与推理源设置已保存", true);
+      appendLog("兼容设置已保存；Claude 强制账号锁与暂停状态不受此开关控制", true);
     }
 
     function openTopupModal() { document.getElementById("topupModal").classList.remove("hidden"); }

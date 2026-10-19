@@ -27,9 +27,35 @@ Ubuntu 24.04 安装 `nbppt-bwrap.apparmor` 至 `/etc/apparmor.d/nbppt-bwrap` 并
 
 ### 可选：官方 Claude Code 生成 PPT
 
-保持 Codex 为默认引擎。安装官方 Claude Code 至 `/usr`、`librsvg2-bin` 及 `fonts-noto-cjk`，为 `nbppt-worker` 配置独立官方 OAuth 登录：`/var/lib/nbppt-worker/.claude/.credentials.json`（0600），最小账号元信息位于 `.claude.json`；不要复制个人 hooks、plugins 或 MCP 配置。以 worker 身份和实际 systemd 限制验证登录、SVG 渲染和中文字体后，再在两个环境文件中设置 `NBPPT_CLAUDE_ENABLED=true`，worker 另加 `CLAUDE_BIN=/usr/bin/claude`、`NBPPT_CLAUDE_MODEL=sonnet`。保持 `NBPPT_REQUIRE_ISOLATION=true`。
+保持 Codex 为默认引擎。Claude 路径采用英文任务指令，只交给模型完整原文、页数和客户显式选择的品牌参考。自动风格不强制套用 ABU9 或统一版式，不预先规定逐页内容和 SVG 骨架。模型自行构思并输出原生 `draft/presentation.pptx`。可信宿主重新打开实际 PPTX，用 LibreOffice/Poppler 离线渲染每页，生成与 PPTX 相同的预览和网页；不执行模型生成的 HTML/JS，不用模板或其他模型兜底。原生文字和形状保持可编辑，图片本身不能变成可编辑对象。
 
-页面、REST 和 MCP `create_presentation` 可选择 `execution_mode=claude_cli`。Claude 使用英文任务指令读取原文、规划并绘制独立 SVG 页面，调用可信渲染器生成 PNG，再逐页自检；PPTX/HTML 仍由现有严格文件检查与封装器处理。未启用、登录失效、预算耗尽或缺文件会失败退款，不切回其他引擎。当前 PPTX 为整页图片，文字不可直接编辑；模型自检不等于独立内容审核。CLI 的美元用量为估算，不代表 Pro 订阅实际扣款。该开关不开放 Claude 视频路径。
+**个人订阅仅开放给绑定持有人。** 网关和 worker 均须设置 `NBPPT_CLAUDE_ENABLED=true`、`NBPPT_CLAUDE_OWNER_USER_ID=<真实用户ID>`；其他用户和管理员都不能借用其订阅。CLI 估算美元用量不代表订阅实际扣款或剩余额度。面向其他客户的商业服务需要另外确认供应商条款和适用认证，不可通过共享 Pro/Max 凭据开放。参考 [官方使用与合规说明](https://code.claude.com/docs/en/legal-and-compliance)。本路径不开放 Claude 视频。
+
+**发布前必须另行完成的运行时验收：** 安装官方 Claude Code 至 `/usr`、`libreoffice-impress`、`poppler-utils`、`fontconfig`、`fonts-noto-cjk`、`bubblewrap`、`socat`。以实际 systemd 服务账号验证受限登录、嵌套 Bash 沙箱、中文字体和一次真实 PPTX→PDF→PNG；依赖缺失、隔离不可用、登录失效均失败关闭。worker 配置 `CLAUDE_BIN=/usr/bin/claude`、`NBPPT_CLAUDE_MODEL=sonnet`、`NBPPT_CLAUDE_HOME=/var/lib/nbppt-worker`、`NBPPT_ACCOUNT_STATE_DIR=/var/lib/nbppt-worker/account-state`（0700）。`NBPPT_PPT_PYTHON=/opt/NBPPT/.venv/bin/python`，可显式指定 `NBPPT_SOFFICE`、`NBPPT_PDFTOPPM`。保持 `NBPPT_REQUIRE_ISOLATION=true`。任务目录必须在登录 HOME 外；生产默认 `/opt/NBPPT/workspace/jobs` 满足要求，macOS 本地可在两端设置同一私有 `NBPPT_JOBS_ROOT=/tmp/nbppt-jobs`。写权限拒绝无法被嵌套允许规则撤销，不可为了在 HOME 内生成而取消凭据保护。`--restricted` 不读取用户转发配置；预检和实际调用采用同一设置边界，不以普通 `auth status` 代替验证。
+
+**同账号串行与熔断：** 登录目录和共享状态目录都必须显式配置，不回退到各调用者自己的 HOME。状态目录归唯一登录所属用户；root 维护创建的锁和状态文件保留该用户所有权。 账号元信息的稳定 UUID 经哈希后标识账户，所有受控 Web/MCP/诊断调用在同一状态目录使用 POSIX 文件锁；进程退出自动释放，排队者拿锁后再次检查熔断。单进程信号量继续限制内存密集工作。429 立即终止当前 CLI 与子进程并保存冷却状态，冷却中在冻结算力前拒绝新的提交/重试；401/403、停用、账单异常或未知额度重置需要持有人处理后手动恢复。CLI 自身最多两次重试；不自动充值、换号、换出口或恢复永久暂停。持久状态损坏也拒绝调用。供应商额度是跨设备的，本机锁不能控制未通过受控入口启动的 CLI、其他设备或其他服务；不得承诺“防封号”。
+
+离线渲染沙箱仅额外只读挂载 Ubuntu 的 `/etc/libreoffice` 公共配置（`/usr` 内的 registry 指向该目录）；保持断网，且不挂载任何登录凭据。缺少该配置会导致 LibreOffice 启动失败，须通过实际 PPTX 转换验收，不能只检查二进制是否存在。
+
+**凭据整理（维护窗口显式执行，不随服务启动自动迁移）：** 使用唯一 `NBPPT_CLAUDE_HOME` 的官方登录，凭据0600、父目录0700。隔离任务仅绑定该目录供官方客户端原子刷新，不复制令牌。先确认无在途任务和无未受控 Claude 进程，再由持有人运行：
+
+```bash
+export NBPPT_CLAUDE_HOME=/var/lib/nbppt-worker
+export NBPPT_ACCOUNT_STATE_DIR=/var/lib/nbppt-worker/account-state
+install -d -m 700 -o nbppt-worker -g nbppt-artifacts "$NBPPT_ACCOUNT_STATE_DIR"
+python -m tools.claude_account audit --legacy-home /root
+# 审阅路径后执行；将重复文件移为非活动 .retired-*，不复制、不删除唯一登录。
+python -m tools.claude_account retire-duplicates --legacy-home /root
+python -m tools.claude_account status
+# 仅在已处理授权/额度问题后人工恢复；运行中不能重置。
+python -m tools.claude_account reset
+# 维护诊断也使用同一账号锁和熔断；不直接运行未受控的 claude -p。
+runuser -u nbppt-worker -- env NBPPT_CLAUDE_HOME="$NBPPT_CLAUDE_HOME" NBPPT_ACCOUNT_STATE_DIR="$NBPPT_ACCOUNT_STATE_DIR" /opt/NBPPT/.venv/bin/python -m tools.claude_account exec --prompt-file /private/check.txt
+```
+
+审核会发现相同凭据内容，以及账号元信息相同但刷新令牌已经分叉的副本；没有元信息且内容不同的历史副本无法可靠归属，须人工确认。非活动备份仍属敏感文件，保持0600并由运维管理；本工具不撤销远端会话。状态/日志不保存原始供应商报错或令牌。模型详细执行日志保留在私有任务目录，不对外发布。
+
+所有失败仍走原有退款；成功必须通过独立文件、页数、图片、压缩包、宏/外部资源与摘要校验后结算。真实内容、文字排版与美感仍需逐页人工审阅，文件检查不能标记事实审核完成。
 
 回退：两个环境文件设 `NBPPT_CLAUDE_ENABLED=false` 并在无运行中任务时重启 worker/gateway，原 Codex 默认路径保持可用。保留失败任务及账目，不回滚数据库。
 

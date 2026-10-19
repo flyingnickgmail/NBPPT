@@ -62,6 +62,9 @@ def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path
         if requested > 0 and requested != count:
             raise DeliveryError("Fixed slide count was not satisfied")
         deck = contained_file(root, f"{job_id}_deck.pptx")
+        if spec.get("presentation_format") == "native-pptx-v1":
+            from gateway.native_ppt import validate_native_pptx
+            validate_native_pptx(deck, count)
         try:
             with zipfile.ZipFile(deck) as archive:
                 if archive.testzip() is not None:

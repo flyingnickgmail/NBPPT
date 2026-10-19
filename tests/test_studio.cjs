@@ -257,3 +257,46 @@ test('legacy single-job session value is restored after initialization', async (
   h.storage.set('nbppt-active-owner','ppt_0123456789'); await h.api.initialize(); await tick();
   assert.equal(h.api.get().activeTask.jobs.ppt,'ppt_0123456789'); assert.equal(h.get('task-view').hidden,false);
 });
+
+test('Claude cooldown blocks only Claude PPT and keeps the selected provider for manual recovery', async () => {
+  const h=harness(async()=>response({}));
+  const caps={delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli']},video:{supported:true}},providers:{claude_cli:{state:'cooldown',retry_after_seconds:60,message:'冷却中'}}};
+  h.api.set({capabilities:caps});h.get('ppt-engine').value='claude_cli';h.api.updateMode('ppt');
+  assert.equal(h.get('submit').disabled,true);
+  assert.equal(h.get('ppt-engine').value,'claude_cli');
+  assert.match(h.get('claude-status').textContent,/60/);
+  h.api.updateMode('video');assert.equal(h.get('submit').disabled,false);
+  caps.providers.claude_cli={state:'ready',message:'可以生成'};h.api.updateMode('ppt');assert.equal(h.get('submit').disabled,false);
+});
+
+test('a 429 admission response exposes the circuit and does not fall back to Codex', async () => {
+  const h=harness(async()=>response({detail:{provider_state:'cooldown',retry_after_seconds:120,message:'已限流'}},429));
+  h.api.set({capabilities:{delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli']},video:{supported:true}}}});
+  h.get('ppt-engine').value='claude_cli';h.api.updateMode('ppt');
+  await assert.rejects(()=>h.api.api('/api/jobs'),/已限流/);
+  assert.equal(h.get('submit').disabled,true);assert.equal(h.get('ppt-engine').value,'claude_cli');
+});
+
+test('a late cooldown response cannot disable a newly signed-in users provider', async () => {
+  let release;const gate=new Promise(r=>release=r);
+  const h=harness(async()=>{await gate;return response({detail:{provider_state:'blocked',message:'暂停'}},503);});
+  const caps={delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli']},video:{supported:true}},providers:{claude_cli:{state:'ready',message:'ready'}}};
+  h.api.set({capabilities:caps});const pending=h.api.api('/api/jobs').catch(()=>{});
+  h.api.clearSession();h.api.set({userId:'new-user',capabilities:caps});h.get('ppt-engine').value='claude_cli';
+  release();await pending;h.api.controls();assert.equal(h.get('submit').disabled,false);
+});
+
+test('a provider failure in a polled task disables Claude retry without hiding the failure refund', async () => {
+  const h=harness(async(path)=>path==='/api/providers/claude/status'?response({state:'blocked',message:'已暂停'}):response({job_id:'ppt_0123456789',status:'FAILED',message:'冻结算力已退回',provider:{state:'blocked',retry_after_seconds:0}}));
+  const task={mode:'ppt',jobs:{ppt:'ppt_0123456789'},input:{source:sourceText,execution_mode:'claude_cli'},request_ids:{ppt:'req'},submit_errors:{}};
+  h.api.set({activeTask:task,capabilities:{delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli']},video:{supported:true}}}});
+  await h.api.pollKind('ppt');assert.equal(h.get('retry-ppt').disabled,true);
+  assert.equal(h.api.get().states.ppt.status,'FAILED');
+});
+
+test('an old failed jobs cooldown cannot disable retry after the live circuit recovers', async () => {
+  const h=harness(async(path)=>path==='/api/providers/claude/status'?response({state:'ready',message:'可以生成'}):response({status:'FAILED',provider:{state:'cooldown',retry_after_seconds:60}}));
+  const task={mode:'ppt',jobs:{ppt:'ppt_0123456789'},input:{source:sourceText,execution_mode:'claude_cli'},request_ids:{ppt:'req'},submit_errors:{}};
+  h.api.set({activeTask:task,capabilities:{delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli']},video:{supported:true}}}});
+  await h.api.pollKind('ppt');assert.equal(h.get('retry-ppt').disabled,false);
+});

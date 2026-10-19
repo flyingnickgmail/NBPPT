@@ -1,10 +1,28 @@
 """Explicit PPT provider selection; Claude is enabled only by the operator."""
 import os
+import math
 
 
-def available_ppt_engines():
+class ProviderUnavailable(ValueError):
+    def __init__(self, state, message, retry_after=0):
+        super().__init__(message)
+        self.state = state
+        self.retry_after = max(0, math.ceil(retry_after))
+        self.status_code = 429 if state == "cooldown" else 503
+
+
+def require_claude_owner(user_id):
+    owner = os.getenv("NBPPT_CLAUDE_OWNER_USER_ID", "").strip()
+    if os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() != "true" or not owner:
+        raise ValueError("Claude 尚未配置个人持有人绑定，入口保持关闭")
+    if not user_id or user_id != owner:
+        raise PermissionError("这份 Claude 个人登录只允许持有人使用")
+
+
+def available_ppt_engines(user_id=None):
     engines = ["codex_cli"]
-    if os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() == "true":
+    owner = os.getenv("NBPPT_CLAUDE_OWNER_USER_ID", "").strip()
+    if os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() == "true" and owner and (user_id is None or user_id == owner):
         engines.append("claude_cli")
     return engines
 

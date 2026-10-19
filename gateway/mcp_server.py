@@ -16,7 +16,7 @@ from gateway.config import get_runtime_settings, TASK_FREEZE_CREDITS
 from gateway.deepseek_compiler import compile_cn_request_to_english_spec, validate_direct_completion
 from gateway.delivery import verify_published, delivery_urls, safe_job_id
 from gateway.template_registry import list_available_templates, match_template_for_prompt
-from gateway.ppt_contract import resolve_ppt_engine
+from gateway.ppt_contract import resolve_ppt_engine, require_claude_owner, ProviderUnavailable
 
 
 class PresentationJobs:
@@ -40,6 +40,32 @@ class PresentationJobs:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def claude_status(self, principal):
+        require_claude_owner(principal.get('user_id'))
+        runtime = get_runtime_settings()
+        try:
+            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                response = await client.get(runtime['overseas_worker_url'] + '/internal/claude-status',
+                    headers={'X-Worker-Secret': runtime['overseas_worker_secret']})
+                response.raise_for_status()
+                data = response.json()
+            if data.get('state') not in ('ready', 'cooldown', 'blocked', 'unavailable'):
+                raise ValueError('Invalid provider state')
+            delay = data.get('retry_after_seconds', 0)
+            if type(delay) not in (int, float) or not 0 <= delay <= 366 * 86400:
+                raise ValueError('Invalid provider cooldown')
+            # Do not forward worker-supplied paths, account identifiers or errors.
+            labels = {'ready': 'Claude 可以接受任务', 'cooldown': 'Claude 限流冷却中，请等待后重试',
+                      'blocked': 'Claude 账号调用已暂停，请持有人处理后手动恢复', 'unavailable': 'Claude 运行环境未就绪'}
+            return {'state': data['state'], 'retry_after_seconds': int(delay), 'message': labels[data['state']]}
+        except Exception:
+            return {'state': 'unavailable', 'retry_after_seconds': 0, 'message': '无法确认 Claude 账号状态，暂停提交'}
+
+    async def require_claude_ready(self, principal):
+        status = await self.claude_status(principal)
+        if status['state'] != 'ready':
+            raise ProviderUnavailable(status['state'], status['message'], status['retry_after_seconds'])
+
     async def create(self, principal, source, template_id, slide_count, request_id,
                      task_type='ppt', video_duration_sec=30, video_aspect_ratio='16:9',
                      video_voice='melo', video_narration=True, video_subtitles=True,
@@ -50,6 +76,8 @@ class PresentationJobs:
         if task_type == 'video' and execution_mode not in ('auto', 'codex_cli'):
             raise ValueError('视频尚未开放 Claude 执行，不能替换成其他引擎')
         engine = resolve_ppt_engine(execution_mode) if task_type == 'ppt' else 'codex_cli'
+        if engine == 'claude_cli':
+            require_claude_owner(principal.get('user_id'))
         if task_type == 'video':
             from gateway.video_contract import VIDEO_VOICES
             if video_voice not in VIDEO_VOICES or type(video_narration) is not bool or type(video_subtitles) is not bool:
@@ -86,6 +114,8 @@ class PresentationJobs:
                     if existing.get('request_hash') != fingerprint:
                         raise ValueError("request_id已用于不同内容，请为新任务选择新编号")
                     return await self.status(principal, job_id)
+                if engine == 'claude_cli':
+                    await self.require_claude_ready(principal)
                 handed_off = False
                 try:
                     await self.billing.try_freeze_credits(principal['api_key'], job_id, task_type, source,
@@ -93,7 +123,8 @@ class PresentationJobs:
                     # Persist the original request before compilation so a failed compile can be retried.
                     await self.billing.save_compiled_spec(job_id, {"_request": arguments})
                     self.progress[job_id] = {"percent": 0, "stage": "queued", "message": "已接收，等待生成"}
-                    self.track(self.execute(job_id, arguments))
+                    execution = {**arguments, 'account_owner_user_id': principal['user_id']} if engine == 'claude_cli' else arguments
+                    self.track(self.execute(job_id, execution))
                     handed_off = True
                     return {"job_id": job_id, "status": "RUNNING", "poll_after_seconds": 30,
                             "message": "任务已提交，使用get_job_status查询；不要重复创建任务。"}
@@ -125,7 +156,9 @@ class PresentationJobs:
                 spec = await compile_cn_request_to_english_spec(arguments['source'], 'ppt',
                     {"slide_count": arguments['slide_count'], "template_id": arguments['template_id'], "execution_mode": arguments.get('execution_mode', 'codex_cli')})
                 spec['requested_slide_count'] = arguments['slide_count']
-            spec['_request'] = arguments
+                if arguments.get('execution_mode') == 'claude_cli':
+                    spec['account_owner_user_id'] = arguments['account_owner_user_id']
+            spec['_request'] = {k: v for k, v in arguments.items() if k != 'account_owner_user_id'}
             await self.billing.save_compiled_spec(job_id, spec)
             self.progress[job_id] = {"percent": 10, "stage": "planning", "message": "正在准备视频分镜"} if task_type == 'video' else {"percent": 25, "stage": "generating", "message": "内容规划完成，正在生成页面"}
             completed = None
@@ -141,6 +174,8 @@ class PresentationJobs:
                             continue
                         event = json.loads(line[6:])
                         if event.get('type') == 'error':
+                            if event.get('provider_state') in ('cooldown', 'blocked'):
+                                raise ProviderUnavailable(event['provider_state'], 'Claude 账号调用已暂停，本项冻结算力将退回', event.get('retry_after_seconds', 0))
                             raise RuntimeError(event.get('message', 'Worker failed'))
                         if event.get('type') == 'progress':
                             self.progress[job_id] = {'percent': min(99, event.get('pct', 0)),
@@ -171,13 +206,23 @@ class PresentationJobs:
                 if actual_spec.get('generator_engine', 'codex_cli') != arguments.get('execution_mode', 'codex_cli'):
                     raise ValueError('PPT completion does not match the admitted provider')
                 actual_spec['requested_slide_count'] = arguments['slide_count']
-            actual_spec['_request'] = arguments
+            actual_spec['_request'] = {k: v for k, v in arguments.items() if k != 'account_owner_user_id'}
             await self.billing.save_compiled_spec(job_id, actual_spec)
             await self.billing.confirm_settle(job_id, float(completed['total_cost_usd']), completed.get('cdn_urls', {}))
         except asyncio.CancelledError:
             await asyncio.shield(self.billing.cancel_refund(job_id, 'Gateway stopped during generation'))
             raise
         except Exception as exc:
+            if isinstance(exc, ProviderUnavailable):
+                # Persist a safe classification so a completed refund can explain the failure.
+                try:
+                    current = await self.billing.get_job(job_id)
+                    snapshot = json.loads((current or {}).get('en_compiled_spec') or '{}')
+                    snapshot['_provider_failure'] = {'state': exc.state, 'retry_after_seconds': exc.retry_after}
+                    await self.billing.save_compiled_spec(job_id, snapshot)
+                finally:
+                    await self.billing.cancel_refund(job_id, str(exc))
+                return
             await self.billing.cancel_refund(job_id, str(exc))
         finally:
             self.progress.pop(job_id, None)
@@ -205,6 +250,9 @@ class PresentationJobs:
         elif job['status'] == 'FAILED':
             result['stage'] = 'failed'
             result['message'] = '生成或文件验收失败，冻结算力已退回。请联系管理员查看详细日志。'
+            if spec.get('_provider_failure'):
+                result['provider'] = spec['_provider_failure']
+                result['message'] = 'Claude 账号限流或授权异常，已停止调用并退回本项冻结算力。处理账号状态后可重试。'
         elif job['status'] == 'COMPLETED':
             result['percent'] = 100
             result['stage'] = 'ready'

@@ -512,7 +512,7 @@ def validate_direct_completion(event: Dict[str, Any], expected_spec=None) -> Dic
             or len(urls.get("slide_preview_urls") or []) != count):
         raise RuntimeError("直接生成未通过完整交付检查")
     if expected_spec is not None:
-        for key in ("generation_contract", "original_prompt_cn", "matched_template"):
+        for key in ("generation_contract", "original_prompt_cn", "matched_template", "presentation_format", "account_owner_user_id"):
             if spec.get(key) != expected_spec.get(key):
                 raise RuntimeError("PPT 交付与原始请求不一致")
         if (spec.get("generator_engine", "codex_cli") != expected_spec.get("generator_engine", "codex_cli")
@@ -534,10 +534,14 @@ async def compile_cn_request_to_english_spec(
     if task_type == "ppt":
         engine = resolve_ppt_engine(extra_params.get("execution_mode", "auto"))
         match = match_template_for_prompt(cn_prompt, extra_params.get("template_id", "auto"))
+        free = engine == "claude_cli" and extra_params.get("template_id", "auto") == "auto"
+        if free:
+            match = {"template": {"id": "auto", "name": "Claude 自主设计"},
+                     "match_reason_cn": "由 Claude 按内容自主设计，不强制匹配母版"}
         count = int(extra_params.get("slide_count", 0))
         if not cn_prompt.strip() or not 0 <= count <= 60:
             raise ValueError("请输入原文，页数须为 0（自动）或 1–60")
-        return {
+        result = {
             "generation_contract": "skill-direct-v1",
             "generator_engine": engine,
             "task_type": "ppt", "original_prompt_cn": cn_prompt,
@@ -548,6 +552,9 @@ async def compile_cn_request_to_english_spec(
             "slide_outline": [], "compiler_engine": f"{'Claude' if engine == 'claude_cli' else 'Codex'} 技能直出（等待实际规划）",
             "is_real_llm": False,
         }
+        if engine == "claude_cli":
+            result["presentation_format"] = "native-pptx-v1"
+        return result
     base_spec = _build_local_structured_spec(cn_prompt, task_type, extra_params)
     settings = get_runtime_settings()
 

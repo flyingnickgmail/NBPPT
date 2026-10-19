@@ -74,7 +74,7 @@ billing = BillingManager()
 mcp_jobs = PresentationJobs(billing)
 mcp_app = build_mcp(mcp_jobs)
 STATIC_DIR = pathlib.Path(__file__).resolve().parent / "static"
-JOBS_ROOT = BASE_DIR / "workspace" / "jobs"
+JOBS_ROOT = pathlib.Path(os.getenv('NBPPT_JOBS_ROOT') or BASE_DIR / "workspace" / "jobs")
 JOBS_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -201,12 +201,12 @@ async def get_templates():
     }
 
 
-def production_capabilities():
+def production_capabilities(principal=None):
     from gateway.ppt_contract import available_ppt_engines
     return {
         "ppt": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"],
                 "progress": True, "preview_after_validation": True, "retry": True,
-                "execution_modes": available_ppt_engines()},
+                "execution_modes": available_ppt_engines((principal or {}).get('user_id'))},
         "video": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["video"],
                   "progress": True, "preview_after_validation": True, "retry": True,
                   "planner_providers": {"codex_cli": True, "claude_cli": False},
@@ -220,7 +220,19 @@ def production_capabilities():
 
 @app.get("/api/capabilities")
 async def get_capabilities(request: Request):
-    return {"delivery_modes": production_capabilities(), "partial_preview": False, "independent_deliveries": True}
+    modes = production_capabilities(request.state.principal)
+    result = {"delivery_modes": modes, "partial_preview": False, "independent_deliveries": True}
+    if 'claude_cli' in modes['ppt']['execution_modes']:
+        result['providers'] = {'claude_cli': await mcp_jobs.claude_status(request.state.principal)}
+    return result
+
+
+@app.get('/api/providers/claude/status')
+async def claude_provider_status(request: Request):
+    try:
+        return await mcp_jobs.claude_status(request.state.principal)
+    except (ValueError, PermissionError) as exc:
+        job_error(exc)
 
 
 @app.get("/api/gorden-preview/{slug}")
@@ -360,6 +372,10 @@ async def get_recent_jobs(request: Request, limit: int = 12):
 
 
 def job_error(exc: Exception, *, conflict: bool = False):
+    from gateway.ppt_contract import ProviderUnavailable
+    if isinstance(exc, ProviderUnavailable):
+        raise HTTPException(exc.status_code, {'message': str(exc), 'provider_state': exc.state,
+            'retry_after_seconds': exc.retry_after}, headers={'Retry-After': str(exc.retry_after)} if exc.retry_after else None)
     if isinstance(exc, PermissionError):
         raise HTTPException(403, str(exc))
     raise HTTPException(409 if conflict else 422, str(exc))
@@ -420,11 +436,14 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
     if os.getenv('NBPPT_REQUIRE_ISOLATION', 'false').lower() == 'true' and req.task_type != 'ppt':
         raise HTTPException(422, '当前部署仅开放隔离运行的 Codex PPT 生成')
     if req.task_type == 'ppt':
-        from gateway.ppt_contract import resolve_ppt_engine
+        from gateway.ppt_contract import resolve_ppt_engine, require_claude_owner
         try:
             resolve_ppt_engine(req.execution_mode)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc))
+            if req.execution_mode == 'claude_cli':
+                require_claude_owner(request.state.principal.get('user_id'))
+                await mcp_jobs.require_claude_ready(request.state.principal)
+        except (ValueError, PermissionError) as exc:
+            job_error(exc)
     api_key = request.state.principal["api_key"]
     task_type = req.task_type if req.task_type in TASK_FREEZE_CREDITS else "ppt"
     freeze_amount = TASK_FREEZE_CREDITS[task_type]
@@ -444,6 +463,9 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
 
             # Step 1: Match Template
             match_preview = match_template_for_prompt(req.prompt_cn, req.template_id)
+            if req.execution_mode == 'claude_cli' and req.template_id == 'auto':
+                match_preview = {'template': {'id': 'auto', 'name': 'Claude 自主设计'},
+                                 'match_reason_cn': 'Claude 按内容自主设计，不强制匹配母版'}
             matched_tpl = match_preview["template"]
             match_reason = match_preview["match_reason_cn"]
             yield f"data: {json.dumps({'type': 'progress', 'pct': 14, 'job_id': job_id, 'message_cn': f'[母版库智能路由] {match_reason}'}, ensure_ascii=False)}\n\n"
@@ -466,7 +488,7 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
                 else "正在梳理【逻辑大纲 + Claude 图形化动效分镜脚本】"
             )
             if task_type == "ppt":
-                engine_desc = "Claude 技能直出" if req.execution_mode == "claude_cli" else "Codex 技能直出"
+                engine_desc = "Claude 自由创作" if req.execution_mode == "claude_cli" else "Codex 技能直出"
                 role_desc = "保留完整原文与客户风格，由生成代理统一规划和绘图"
             yield f"data: {json.dumps({'type': 'progress', 'pct': 20, 'job_id': job_id, 'message_cn': f'[主控 Agent 强逻辑推理] 调用 {engine_desc}，{role_desc}...'}, ensure_ascii=False)}\n\n"
 
@@ -484,10 +506,12 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
                 },
             )
             en_spec["requested_slide_count"] = req.slide_count
+            if req.execution_mode == 'claude_cli':
+                en_spec['account_owner_user_id'] = request.state.principal['user_id']
             await billing.save_compiled_spec(job_id, en_spec)
 
             summary_cn = en_spec.get("task_summary_cn", "")
-            real_badge = "真实大模型推理完成" if en_spec.get("is_real_llm") else "结构化推理完成"
+            real_badge = "原文已保留，等待生成代理创作" if en_spec.get('generation_contract') == 'skill-direct-v1' else ("真实大模型推理完成" if en_spec.get("is_real_llm") else "结构化推理完成")
             if en_spec.get("generation_contract") == "skill-direct-v1":
                 real_badge = "原文已准备，等待 Codex 实际规划"
             msg_spec = f"[{real_badge}] {summary_cn} · 引擎：{en_spec.get('compiler_engine')}"
@@ -505,7 +529,7 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
                         "max_budget_usd": 0.85,
                         "execution_mode": req.execution_mode,
                         "english_spec": en_spec,
-                        "runtime_keys": runtime_cfg,
+                        "runtime_keys": {'account_safe_proxy': runtime_cfg.get('account_safe_proxy', '')} if en_spec.get('generation_contract') == 'skill-direct-v1' else runtime_cfg,
                     },
                 ) as resp:
                     resp.raise_for_status()

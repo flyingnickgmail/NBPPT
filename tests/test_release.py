@@ -47,6 +47,23 @@ def test_isolation_mounts_only_current_job_and_allowed_runtime(monkeypatch,tmp_p
     assert cmd.count('--bind')==2
 
 
+def test_offline_renderer_gets_public_registry_without_credentials(monkeypatch, tmp_path):
+    monkeypatch.setenv('NBPPT_REQUIRE_ISOLATION', 'true')
+    monkeypatch.setattr(isolation.sys, 'platform', 'linux')
+    monkeypatch.setattr(isolation.os, 'geteuid', lambda: 1001)
+    monkeypatch.setattr(isolation.shutil, 'which', lambda _: '/usr/bin/bwrap')
+    original = Path.is_dir
+    monkeypatch.setattr(Path, 'is_dir', lambda p: str(p) == '/etc/libreoffice' or original(p))
+    job = tmp_path / 'job'
+    job.mkdir()
+    args, _ = isolation.isolated_command(['/usr/bin/soffice'], job, [], agent='renderer')
+    registry = args.index('/etc/libreoffice')
+    assert args[registry - 1:registry + 2] == ['--ro-bind', '/etc/libreoffice', '/etc/libreoffice']
+    assert '--unshare-net' in args
+    assert args.count('--bind') == 1  # Only this job, no credential bind.
+    assert '/etc/nbppt' not in args and str(Path.home() / '.claude') not in args
+
+
 def test_client_scope_and_revocation(manager):
     import hashlib
     import httpx

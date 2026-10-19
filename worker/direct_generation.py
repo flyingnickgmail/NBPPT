@@ -142,9 +142,6 @@ def package_deck(job_id, job_dir, spec):
     plan = json.loads((job_dir / "deck_plan.json").read_text())
     slides = validate_plan(plan, spec)
     engine = spec.get("generator_engine", "codex_cli")
-    if engine == "claude_cli":
-        from worker.claude_generation import validate_svg_sources
-        validate_svg_sources(job_dir / "staging/assets", slides)
     review = json.loads((job_dir / "review.json").read_text())
     if review.get("reviewed_pages") != list(range(1, len(slides) + 1)) or review.get("issues") != []:
         raise ValueError("生成代理未完成逐页自检或仍有问题")
@@ -189,6 +186,11 @@ async def stop_process(proc):
 
 
 async def generate_deck_stream(req, jobs_root, codex_bin, semaphore, claude_bin=None):
+    if req.english_spec.get("generator_engine", getattr(req, "execution_mode", "auto")) == "claude_cli":
+        from worker.claude_generation import generate_deck_stream as generate_native
+        async for message in generate_native(req, jobs_root, claude_bin, semaphore):
+            yield message
+        return
     proc = None
     acquired = False
     try:
@@ -205,13 +207,8 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore, claude_bin=
         (job_dir / "staging/assets").mkdir(parents=True)
         (job_dir / "source.md").write_text(spec["original_prompt_cn"], encoding="utf-8")
         (job_dir / "template.json").write_text(json.dumps(spec.get("matched_template", {}), ensure_ascii=False), encoding="utf-8")
-        if engine == "claude_cli":
-            from worker import claude_generation
-            prompt = claude_generation.build_prompt(spec)
-            refs = claude_generation.references(spec.get("matched_template", {}))
-        else:
-            prompt = build_prompt(spec)
-            refs = skill_references(spec.get("matched_template", {}))
+        prompt = build_prompt(spec)
+        refs = skill_references(spec.get("matched_template", {}))
         (job_dir / "agent_prompt.txt").write_text(prompt, encoding="utf-8")
         yield event("progress", pct=28, message_cn=f"原文已完整交给 {label}：按技能规划内容，模板仅约束品牌风格。")
         while not acquired:
@@ -235,8 +232,6 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore, claude_bin=
                         raise ValueError("MCP 配置名称包含不支持的字符，请为执行节点使用独立配置")
                     cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
             cmd += ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt]
-            if engine == "claude_cli":
-                cmd = claude_generation.command(claude_bin, prompt, req.max_budget_usd)
             cmd, _ = isolated_command(cmd, job_dir, refs, agent="claude" if engine == "claude_cli" else "codex")
             timeout = max(1800, (spec["slide_count"] or 15) * 180)
             started = time.monotonic()
@@ -256,7 +251,7 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore, claude_bin=
                         yield event("progress", pct=min(85, 35 + count * 3), message_cn=f"{label} 正在规划、绘制和自检；任务内已有 {count} 页图片，耗时 {elapsed} 秒。")
             if proc.returncode != 0:
                 raise RuntimeError(f"{label} 执行失败（退出码 {proc.returncode}），未使用模板兜底")
-            cost = claude_generation.reported_cost(log_path) if engine == "claude_cli" else None
+            cost = None
         finally:
             await stop_process(proc)
             semaphore.release()

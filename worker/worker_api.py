@@ -7,7 +7,7 @@ Workflow:
    - `codex_cli` (Default): Sends the prompt directly to `codex exec` (`gpt-6-astra`), which invokes its
      built-in `image_gen` tool to generate pure-image 16:9 consulting slides and assembles the `.pptx`
      via `~/.codex/skills/client-ci-ppt-image-deck/scripts/images_to_pptx.py`.
-   - `claude_cli`: Sends the prompt directly to `claude -p --dangerously-skip-permissions` to build the deck.
+   - `claude_cli`: Uses the owner-bound restricted native PPT flow; the legacy Claude entry is rejected.
 3. Stage 3 (Master Agent QA Inspection):
    - Verifies all generated slide images (`1672x941` PNGs) and `.pptx` packaging,
    - Builds the full-screen image presentation `.html`,
@@ -45,7 +45,7 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 if os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() != "true":
     load_dotenv(BASE_DIR / ".env")
 SKILLS_ROOT = BASE_DIR / "worker" / "agent_skills" / ".claude" / "skills"
-WORKSPACE_JOBS_DIR = BASE_DIR / "workspace" / "jobs"
+WORKSPACE_JOBS_DIR = pathlib.Path(os.getenv('NBPPT_JOBS_ROOT') or BASE_DIR / "workspace" / "jobs")
 WORKSPACE_JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
 WORKER_SECRET = os.getenv("OVERSEAS_WORKER_SECRET", "")
@@ -85,7 +85,7 @@ CODEX_GENERATED_IMAGES_DIR = pathlib.Path.home() / ".codex" / "generated_images"
 IMAGES_TO_PPTX_SCRIPT = pathlib.Path.home() / ".codex" / "skills" / "client-ci-ppt-image-deck" / "scripts" / "images_to_pptx.py"
 MD_TO_CI_PPTX_SCRIPT = pathlib.Path.home() / ".codex" / "skills" / "client-ci-ppt-image-deck" / "scripts" / "markdown_script_to_ci_pptx.mjs"
 
-# Overseas Personal Account Anti-Ban Serial Lock
+# Local capacity bound. Claude also uses its process-shared account lease.
 ACCOUNT_SAFE_SEMAPHORE = asyncio.Semaphore(1)
 
 app = FastAPI(title="Personal Agent Direct Codex/Claude Executor & QA Worker", version="2.0.0", docs_url=None, redoc_url=None, openapi_url=None)
@@ -358,6 +358,24 @@ async def health_check():
     return {"status": "alive"}
 
 
+@app.get('/internal/claude-status')
+async def claude_status(x_worker_secret: Optional[str] = Header(None)):
+    if len(WORKER_SECRET) < 32 or not secrets.compare_digest(x_worker_secret or '', WORKER_SECRET):
+        raise HTTPException(403, 'Unauthorized worker secret')
+    try:
+        from gateway.ppt_contract import require_claude_owner
+        from worker.claude_account import ClaudeProfile, AccountGate, verify_login
+        from worker.native_deck import renderer_tools, validate_job_location
+        require_claude_owner(os.getenv('NBPPT_CLAUDE_OWNER_USER_ID'))
+        await asyncio.to_thread(renderer_tools)
+        profile = ClaudeProfile.configured()
+        validate_job_location(WORKSPACE_JOBS_DIR, profile)
+        await verify_login(CLAUDE_BIN, profile)
+        return AccountGate.configured(profile).status()
+    except Exception:
+        return {'state': 'unavailable', 'retry_after_seconds': 0, 'message': 'Claude 运行环境未就绪'}
+
+
 @app.post("/internal/execute-stream")
 async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str] = Header(None)):
     if len(WORKER_SECRET) < 32 or WORKER_SECRET == "super-secret-mtls-token-2026" or not secrets.compare_digest(x_worker_secret or "", WORKER_SECRET):
@@ -379,6 +397,11 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             engine = resolve_ppt_engine(req.english_spec.get("generator_engine", req.execution_mode))
             if req.execution_mode != "auto" and req.execution_mode != engine:
                 raise ValueError("PPT 生成引擎与任务约定不一致")
+            if engine == 'claude_cli':
+                from gateway.ppt_contract import require_claude_owner
+                require_claude_owner(req.english_spec.get('account_owner_user_id'))
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         return StreamingResponse(
@@ -395,6 +418,8 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             media_type="text/event-stream",
         )
 
+    if req.execution_mode == "claude_cli":
+        raise HTTPException(422, "Claude requires the owner-bound native PPT contract")
     if os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() == "true":
         raise HTTPException(422, "Production currently supports isolated Codex PPT generation only")
     job_dir = WORKSPACE_JOBS_DIR / req.job_id
@@ -447,7 +472,7 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             async with ACCOUNT_SAFE_SEMAPHORE:
                 if account_safe:
                     jitter = round(random.uniform(0.4, 0.9), 2)
-                    yield f"data: {json.dumps({'type': 'progress', 'pct': 32, 'message_cn': f'[防封号安全沙盒] 单账号串行锁 Semaphore(1) 已生效 · 拟人间隔 {jitter}s'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'progress', 'pct': 32, 'message_cn': f'[执行队列] 单进程容量限制 Semaphore(1) 已生效 · 兼容间隔 {jitter}s'}, ensure_ascii=False)}\n\n"
                     await asyncio.sleep(jitter)
 
                 if req.task_type in ("ppt", "composite"):
