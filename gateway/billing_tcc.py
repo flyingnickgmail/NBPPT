@@ -90,6 +90,12 @@ class BillingManager:
                 key_columns = {row[1] for row in await cur.fetchall()}
             if 'scope' not in key_columns:
                 await db.execute("ALTER TABLE mcp_api_keys ADD COLUMN scope TEXT NOT NULL DEFAULT 'generate'")
+            if 'allow_claude' not in key_columns:
+                await db.execute("ALTER TABLE mcp_api_keys ADD COLUMN allow_claude INTEGER NOT NULL DEFAULT 0 CHECK (allow_claude IN (0,1))")
+                # Preserve only the already-authorized holder's existing keys, once.
+                owner = os.getenv('NBPPT_CLAUDE_OWNER_USER_ID', '').strip()
+                if owner:
+                    await db.execute("UPDATE mcp_api_keys SET allow_claude=1 WHERE user_id=?", (owner,))
             await db.execute("CREATE TABLE IF NOT EXISTS web_sessions (token_hash TEXT PRIMARY KEY, api_key TEXT NOT NULL, expires_at REAL NOT NULL)")
             # Never re-enable the historically public demo credential.
             await db.execute("UPDATE mcp_api_keys SET is_active = 0 WHERE api_key = ?", (DEFAULT_DEMO_API_KEY,))
@@ -142,7 +148,7 @@ class BillingManager:
 
             user_id = user_row["user_id"]
             async with db.execute(
-                "SELECT api_key, name, scope, daily_credit_limit, is_active, created_at FROM mcp_api_keys WHERE user_id = ? ORDER BY created_at DESC",
+                "SELECT api_key, name, scope, allow_claude, daily_credit_limit, is_active, created_at FROM mcp_api_keys WHERE user_id = ? ORDER BY created_at DESC",
                 (user_id,),
             ) as cur:
                 keys = [dict(r) for r in await cur.fetchall()]
@@ -189,30 +195,81 @@ class BillingManager:
             await db.commit()
             return {"credits_available": new_bal, "added": amount}
 
-    async def create_new_api_key(self, current_api_key: str, key_name: str) -> Dict[str, Any]:
+    @staticmethod
+    async def _require_key_admin(db, current_api_key):
+        async with db.execute(
+            "SELECT k.user_id FROM mcp_api_keys k JOIN users u ON k.user_id=u.id WHERE k.api_key=? AND k.is_active=1 AND k.scope='admin' AND u.tier='admin'", (current_api_key,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise PermissionError('Administrator required')
+        return row[0]
+
+    async def create_new_api_key(self, current_api_key: str, key_name: str, *, allow_claude=False, daily_credit_limit=240) -> Dict[str, Any]:
+        """Issue a separate tenant, never an alias of the administrator's account."""
+        if type(allow_claude) is not bool or type(daily_credit_limit) is not int or not 1 <= daily_credit_limit <= 5000:
+            raise ValueError('Invalid key permissions or daily limit')
+        if not isinstance(key_name, str) or not 1 <= len(key_name.strip()) <= 80:
+            raise ValueError('密钥名称须为1–80字')
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT k.user_id FROM mcp_api_keys k JOIN users u ON k.user_id=u.id WHERE k.api_key=? AND k.is_active=1 AND k.scope='admin' AND u.tier='admin'", (current_api_key,)
-            ) as cur:
-                row = await cur.fetchone()
-            if not row:
-                raise PermissionError("无效的当前 API Key")
+            await db.execute('BEGIN IMMEDIATE')
+            await self._require_key_admin(db, current_api_key)
+            # A permission flag cannot authorize another tenant to borrow personal OAuth.
+            if allow_claude:
+                raise PermissionError('独立账户尚无适用的 Claude 授权，不能借用个人持有人的登录')
             new_key = f"sk-mcp-{secrets.token_urlsafe(32)}"
+            user_id = str(uuid.uuid4())
             ts = now_iso()
+            await db.execute("INSERT INTO users (id,phone_or_email,tier,credits_available,credits_frozen,created_at) VALUES (?,?,'studio',0,0,?)",
+                             (user_id, f'account-{user_id}@local.invalid', ts))
             await db.execute(
-                "INSERT INTO mcp_api_keys (api_key, user_id, name, daily_credit_limit, is_active, created_at) VALUES (?, ?, ?, 5000, 1, ?)",
-                (new_key, row["user_id"], key_name or "External MCP Client Key", ts),
+                "INSERT INTO mcp_api_keys (api_key,user_id,name,daily_credit_limit,is_active,created_at,scope,allow_claude) VALUES (?,?,?,?,1,?,'generate',0)",
+                (new_key, user_id, key_name.strip(), daily_credit_limit, ts),
             )
             await db.commit()
-            return {"api_key": new_key, "name": key_name, "created_at": ts}
+            return {'api_key': new_key, 'key_id': hashlib.sha256(new_key.encode()).hexdigest(), 'user_id': user_id,
+                    'name': key_name.strip(), 'scope': 'generate', 'allow_claude': False,
+                    'daily_credit_limit': daily_credit_limit, 'credits_available': 0, 'created_at': ts}
+
+    async def list_managed_keys(self, current_api_key):
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await self._require_key_admin(db, current_api_key)
+            db.row_factory = aiosqlite.Row
+            async with db.execute('SELECT api_key,user_id,name,scope,allow_claude,daily_credit_limit,is_active,created_at FROM mcp_api_keys ORDER BY created_at DESC') as cur:
+                rows = [dict(row) for row in await cur.fetchall()]
+        for row in rows:
+            raw = row.pop('api_key')
+            row.update(key_id=hashlib.sha256(raw.encode()).hexdigest(), api_key='***'+raw[-4:], allow_claude=bool(row['allow_claude']))
+        return rows
+
+    async def set_key_claude_permission(self, current_api_key, key_id, allow_claude):
+        if type(allow_claude) is not bool:
+            raise ValueError('allow_claude must be a boolean')
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('BEGIN IMMEDIATE')
+            await self._require_key_admin(db, current_api_key)
+            async with db.execute('SELECT api_key,user_id,is_active FROM mcp_api_keys') as cur:
+                row = next((r for r in await cur.fetchall() if hashlib.sha256(r[0].encode()).hexdigest() == key_id), None)
+            if row is None:
+                raise LookupError('Key not found')
+            if not row[2]:
+                raise ValueError('Key is revoked')
+            if allow_claude:
+                from gateway.ppt_contract import require_claude_owner
+                require_claude_owner(row[1])
+            await db.execute('UPDATE mcp_api_keys SET allow_claude=? WHERE api_key=?', (int(allow_claude), row[0]))
+            await db.commit()
+        return {'key_id': key_id, 'user_id': row[1], 'allow_claude': allow_claude}
 
     async def revoke_api_key(self, principal, key_id):
-        if principal['tier'] != 'admin':
-            raise PermissionError('Administrator required')
+        await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute('SELECT api_key FROM mcp_api_keys WHERE user_id=?', (principal['user_id'],)) as cur:
+            await db.execute('BEGIN IMMEDIATE')
+            await self._require_key_admin(db, principal['api_key'])
+            async with db.execute('SELECT api_key FROM mcp_api_keys') as cur:
                 keys = await cur.fetchall()
             key = next((r[0] for r in keys if hashlib.sha256(r[0].encode()).hexdigest() == key_id), None)
             if key is None:
@@ -225,7 +282,8 @@ class BillingManager:
         return {'revoked': True}
 
     async def try_freeze_credits(
-        self, api_key: str, job_id: str, task_type: str, cn_prompt: str, freeze_amount: int, request_hash: str | None = None
+        self, api_key: str, job_id: str, task_type: str, cn_prompt: str, freeze_amount: int, request_hash: str | None = None,
+        *, require_claude=False
     ) -> Dict[str, Any]:
         """Phase 1 (Try): Atomically validate API key and freeze user credits before invoking overseas worker."""
         await self.initialize()
@@ -236,7 +294,7 @@ class BillingManager:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT u.id as user_id, u.credits_available, u.credits_frozen, u.tier, k.daily_credit_limit
+                SELECT u.id as user_id, u.credits_available, u.credits_frozen, u.tier, k.daily_credit_limit, k.scope, k.allow_claude
                 FROM mcp_api_keys k
                 JOIN users u ON k.user_id = u.id
                 WHERE k.api_key = ? AND k.is_active = 1
@@ -246,6 +304,13 @@ class BillingManager:
                 row = await cur.fetchone()
             if not row:
                 raise PermissionError("无效或已停用的 MCP API Key")
+            if row['scope'] not in ('admin', 'generate'):
+                raise PermissionError('Credential scope does not allow generation')
+            if require_claude:
+                from gateway.ppt_contract import require_claude_owner
+                require_claude_owner(row['user_id'])
+                if not row['allow_claude']:
+                    raise PermissionError('当前密钥未获准使用 Claude')
             async with db.execute("SELECT count(*), sum(user_id=?) FROM media_jobs WHERE status='RUNNING'", (row['user_id'],)) as cur:
                 total, owned = await cur.fetchone()
             if total >= int(os.getenv('NBPPT_MAX_RUNNING', '8')) or (owned or 0) >= int(os.getenv('NBPPT_MAX_USER_RUNNING', '2')):

@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS mcp_api_keys (
     name VARCHAR(64) DEFAULT 'Default MCP Key',
     daily_credit_limit INT DEFAULT 2000,
     is_active BOOLEAN DEFAULT TRUE,
+    scope VARCHAR(16) NOT NULL DEFAULT 'generate',
+    allow_claude BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

@@ -12,6 +12,7 @@ import asyncio
 import os
 import hashlib
 import fcntl
+import re
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, Literal
 
@@ -85,7 +86,7 @@ async def access_control(request: Request, call_next):
     try:
         if protected and not (path == "/api/session" and request.method == "POST"):
             request.state.principal = await authenticate_request(billing, request)
-            if path.startswith("/api/settings/") or path in ("/api/health/details", "/api/wallet/topup", "/api/wallet/keys", "/api/wallet/keys/revoke"):
+            if path.startswith(("/api/settings/", "/api/wallet/keys/")) or path in ("/api/health/details", "/api/wallet/topup", "/api/wallet/keys"):
                 if request.state.principal["tier"] != "admin":
                     raise HTTPException(403, "Administrator required")
         response = await call_next(request)
@@ -118,6 +119,7 @@ async def session_info(request: Request):
     scope = request.state.principal.get("scope", "generate")
     return {"user_id": request.state.principal["user_id"], "admin": request.state.principal["tier"] == "admin",
             "scope": scope, "can_generate": scope in {"admin", "generate"},
+            "allow_claude": request.state.principal.get('allow_claude', False),
             "ppt_only": os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() == "true"}
 
 
@@ -165,7 +167,9 @@ class TopupRequest(BaseModel):
 
 
 class CreateKeyRequest(BaseModel):
-    name: str = "Cursor / Claude Desktop 生产密钥"
+    name: str = Field(default="独立账户密钥", min_length=1, max_length=80)
+    allow_claude: bool = Field(default=False, strict=True)
+    daily_credit_limit: int = Field(default=240, ge=1, le=5000, strict=True)
 
 
 class ModelSettingsUpdate(BaseModel):
@@ -206,7 +210,7 @@ def production_capabilities(principal=None):
     return {
         "ppt": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"],
                 "progress": True, "preview_after_validation": True, "retry": True,
-                "execution_modes": available_ppt_engines((principal or {}).get('user_id'))},
+                "execution_modes": available_ppt_engines((principal or {}).get('user_id'), allow_claude=(principal or {}).get('allow_claude', False))},
         "video": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["video"],
                   "progress": True, "preview_after_validation": True, "retry": True,
                   "planner_providers": {"codex_cli": True, "claude_cli": False},
@@ -344,11 +348,32 @@ async def topup_wallet(req: TopupRequest, request: Request):
 async def create_key(req: CreateKeyRequest, request: Request):
     api_key = request.state.principal["api_key"]
     try:
-        new_k = await billing.create_new_api_key(api_key, req.name)
+        new_k = await billing.create_new_api_key(api_key, req.name, allow_claude=req.allow_claude, daily_credit_limit=req.daily_credit_limit)
         overview = await billing.get_wallet_overview(api_key)
         return {"new_key": new_k, "wallet": overview}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except (ValueError, PermissionError) as exc:
+        job_error(exc)
+
+
+@app.get('/api/wallet/keys')
+async def managed_keys(request: Request):
+    return {'keys': await billing.list_managed_keys(request.state.principal['api_key'])}
+
+
+class KeyPermissionRequest(BaseModel):
+    allow_claude: bool = Field(strict=True)
+
+
+@app.patch('/api/wallet/keys/{key_id}')
+async def update_key_permissions(key_id: str, req: KeyPermissionRequest, request: Request):
+    if not re.fullmatch(r'[a-f0-9]{64}', key_id):
+        raise HTTPException(422, 'Invalid key_id')
+    try:
+        return await billing.set_key_claude_permission(request.state.principal['api_key'], key_id, req.allow_claude)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except (ValueError, PermissionError) as exc:
+        job_error(exc)
 
 
 class RevokeKeyRequest(BaseModel):
@@ -436,11 +461,11 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
     if os.getenv('NBPPT_REQUIRE_ISOLATION', 'false').lower() == 'true' and req.task_type != 'ppt':
         raise HTTPException(422, '当前部署仅开放隔离运行的 Codex PPT 生成')
     if req.task_type == 'ppt':
-        from gateway.ppt_contract import resolve_ppt_engine, require_claude_owner
+        from gateway.ppt_contract import resolve_ppt_engine
         try:
             resolve_ppt_engine(req.execution_mode)
             if req.execution_mode in ('claude_cli', 'claude_codex'):
-                require_claude_owner(request.state.principal.get('user_id'))
+                await mcp_jobs.require_claude_access(request.state.principal)
                 await mcp_jobs.require_claude_ready(request.state.principal)
         except (ValueError, PermissionError) as exc:
             job_error(exc)
@@ -455,7 +480,8 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
     async def event_pipeline():
         try:
             freeze_info = await billing.try_freeze_credits(
-                api_key, job_id, task_type, req.prompt_cn, freeze_amount
+                api_key, job_id, task_type, req.prompt_cn, freeze_amount,
+                require_claude=req.execution_mode in ('claude_cli', 'claude_codex')
             )
             bal_after = freeze_info["balance_after_freeze"]
             msg_try = f"[TCC 预授权] 已冻结 {freeze_amount} 算力点（可用余额 {bal_after} 点）"

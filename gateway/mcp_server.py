@@ -40,8 +40,15 @@ class PresentationJobs:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def claude_status(self, principal):
+    async def require_claude_access(self, principal):
         require_claude_owner(principal.get('user_id'))
+        from gateway.auth import authenticate_key
+        current = await authenticate_key(self.billing, principal.get('api_key', ''))
+        if current['user_id'] != principal.get('user_id') or not current['allow_claude']:
+            raise PermissionError('当前密钥未获准使用 Claude')
+
+    async def claude_status(self, principal):
+        await self.require_claude_access(principal)
         runtime = get_runtime_settings()
         try:
             async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
@@ -77,7 +84,7 @@ class PresentationJobs:
             raise ValueError('视频尚未开放 Claude 执行，不能替换成其他引擎')
         engine = resolve_ppt_engine(execution_mode) if task_type == 'ppt' else 'codex_cli'
         if engine in ('claude_cli', 'claude_codex'):
-            require_claude_owner(principal.get('user_id'))
+            await self.require_claude_access(principal)
         if task_type == 'video':
             from gateway.video_contract import VIDEO_VOICES
             if video_voice not in VIDEO_VOICES or type(video_narration) is not bool or type(video_subtitles) is not bool:
@@ -115,11 +122,13 @@ class PresentationJobs:
                         raise ValueError("request_id已用于不同内容，请为新任务选择新编号")
                     return await self.status(principal, job_id)
                 if engine in ('claude_cli', 'claude_codex'):
+                    await self.require_claude_access(principal)
                     await self.require_claude_ready(principal)
                 handed_off = False
                 try:
                     await self.billing.try_freeze_credits(principal['api_key'], job_id, task_type, source,
-                                                         TASK_FREEZE_CREDITS[task_type], request_hash=fingerprint)
+                                                         TASK_FREEZE_CREDITS[task_type], request_hash=fingerprint,
+                                                         require_claude=engine in ('claude_cli', 'claude_codex'))
                     # Persist the original request before compilation so a failed compile can be retried.
                     await self.billing.save_compiled_spec(job_id, {"_request": arguments})
                     self.progress[job_id] = {"percent": 0, "stage": "queued", "message": "已接收，等待生成"}

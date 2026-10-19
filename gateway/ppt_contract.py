@@ -19,10 +19,10 @@ def require_claude_owner(user_id):
         raise PermissionError("这份 Claude 个人登录只允许持有人使用")
 
 
-def available_ppt_engines(user_id=None):
+def available_ppt_engines(user_id=None, *, allow_claude=True):
     engines = ["codex_cli"]
     owner = os.getenv("NBPPT_CLAUDE_OWNER_USER_ID", "").strip()
-    if os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() == "true" and owner and (user_id is None or user_id == owner):
+    if allow_claude and os.getenv("NBPPT_CLAUDE_ENABLED", "false").lower() == "true" and owner and (user_id is None or user_id == owner):
         engines.extend(["claude_cli", "claude_codex"])
     return engines
 

@@ -41,6 +41,7 @@ def manager(tmp_path, monkeypatch):
         for user, key, tier in (("a", KEY_A, "studio"), ("b", KEY_B, "studio"), ("admin", ADMIN, "admin")):
             db.execute("INSERT INTO users(id,phone_or_email,tier,credits_available,created_at) VALUES (?,?,?,?,?)", (user,user,tier,2000,"now"))
             db.execute("INSERT INTO mcp_api_keys(api_key,user_id,created_at,scope) VALUES (?,?,?,?)", (key,user,"now","admin" if tier=="admin" else "generate"))
+        db.execute('UPDATE mcp_api_keys SET allow_claude=1 WHERE api_key=?', (KEY_A,))
     monkeypatch.setattr(main, "billing", mgr)
     monkeypatch.setattr(main, "JOBS_ROOT", mgr.jobs_root)
     return mgr
