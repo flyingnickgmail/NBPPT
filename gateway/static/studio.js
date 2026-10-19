@@ -267,6 +267,7 @@ async function initialize() {
     $('task-summary').textContent = ''; $('request-source').textContent = ''; $('request-config').textContent = ''; showComposer();
   }
   userId = session.user_id; authenticated = true; canGenerate = session.can_generate === true; ready = false; $('account').textContent = '退出'; $('admin').hidden = !session.admin;
+  if (session.admin && new URL(location.href || location.origin).searchParams.get('next') === 'admin') { location.replace('/admin'); return; }
   const templates = await api('/api/templates'); if (initEpoch !== epoch) return; $('style').replaceChildren(new Option('自动匹配','auto'));
   templates.templates.forEach(t => { if (t.id !== 'auto') $('style').add(new Option(t.name, t.id)); });
   capabilities = await api('/api/capabilities'); if (initEpoch !== epoch) return;

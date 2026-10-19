@@ -51,3 +51,13 @@ CREATE TABLE IF NOT EXISTS credit_ledger (
     note TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS admin_actions (
+    request_id VARCHAR(80) PRIMARY KEY,
+    actor_user_id UUID NOT NULL REFERENCES users(id),
+    action VARCHAR(32) NOT NULL,
+    target_id TEXT NOT NULL,
+    fingerprint VARCHAR(64) NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

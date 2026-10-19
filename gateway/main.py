@@ -19,9 +19,9 @@ from typing import Optional, Dict, Any, Literal
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from gateway.config import (
     BASE_DIR,
@@ -82,20 +82,28 @@ JOBS_ROOT.mkdir(parents=True, exist_ok=True)
 @app.middleware("http")
 async def access_control(request: Request, call_next):
     path = request.url.path
-    protected = path.startswith(("/api/", "/artifacts/")) or path == "/mcp" or path.startswith("/mcp/")
+    admin_page = path in ('/admin','/static/admin.html')
+    protected = admin_page or path.startswith(("/api/", "/artifacts/")) or path == "/mcp" or path.startswith("/mcp/")
     try:
         if protected and not (path == "/api/session" and request.method == "POST"):
             request.state.principal = await authenticate_request(billing, request)
-            if path.startswith(("/api/settings/", "/api/wallet/keys/")) or path in ("/api/health/details", "/api/wallet/topup", "/api/wallet/keys"):
+            if admin_page or path.startswith(("/api/admin/", "/api/settings/", "/api/wallet/keys/")) or path in ("/api/health/details", "/api/wallet/topup", "/api/wallet/keys"):
                 if request.state.principal["tier"] != "admin":
                     raise HTTPException(403, "Administrator required")
         response = await call_next(request)
     except HTTPException as exc:
-        response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        if admin_page and exc.status_code==401:
+            response=RedirectResponse('/?next=admin',status_code=303)
+        elif admin_page:
+            response=HTMLResponse('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>需要管理员权限</title><h1>需要管理员权限</h1><p>当前密钥没有管理权限，请返回工作台，使用管理员密钥登录。</p><a href="/">返回工作台</a></html>',status_code=exc.status_code)
+        else:
+            response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     if protected:
         response.headers["Cache-Control"] = "no-store"
+    if admin_page:
+        response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     return response
 
 
@@ -195,6 +203,11 @@ async def serve_web_studio():
     if not index_file.exists():
         return HTMLResponse("<h1>Web Studio UI missing</h1>", status_code=404)
     return HTMLResponse(index_file.read_text(encoding="utf-8"))
+
+
+@app.get('/admin', response_class=HTMLResponse)
+async def serve_admin():
+    return HTMLResponse((STATIC_DIR/'admin.html').read_text(encoding='utf-8'))
 
 
 @app.get("/api/templates")
@@ -384,8 +397,88 @@ class RevokeKeyRequest(BaseModel):
 async def revoke_key(req: RevokeKeyRequest, request: Request):
     try:
         return await billing.revoke_api_key(request.state.principal, req.key_id)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404,str(exc))
+    except (ValueError,PermissionError) as exc:
+        job_error(exc)
+
+
+class AdminCreateKeyRequest(CreateKeyRequest):
+    model_config = ConfigDict(extra='forbid')
+    request_id: str = Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')
+    initial_credits: int = Field(default=0,ge=0,le=1000000,strict=True)
+    scope: Literal['generate','read'] = 'generate'
+
+
+class AdminUpdateKeyRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_id: str = Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')
+    name: Optional[str] = Field(default=None,min_length=1,max_length=80)
+    daily_credit_limit: Optional[int] = Field(default=None,ge=1,le=5000,strict=True)
+    scope: Optional[Literal['generate','read']] = None
+    allow_claude: Optional[bool] = Field(default=None,strict=True)
+
+
+class AdminCreditRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_id: str = Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')
+    delta: int = Field(ge=-1000000,le=1000000,strict=True)
+    note: str = Field(min_length=1,max_length=200)
+
+
+class AdminRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_id: str = Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')
+
+
+@app.get('/api/admin/keys')
+async def admin_keys(request: Request):
+    return {'keys':await billing.list_managed_keys(request.state.principal['api_key'])}
+
+
+@app.get('/api/admin/actions')
+async def admin_actions(request: Request):
+    return {'actions':await billing.list_admin_actions(request.state.principal['api_key'])}
+
+
+@app.post('/api/admin/keys')
+async def admin_create_key(req: AdminCreateKeyRequest,request: Request):
+    try:
+        return {'new_key':await billing.create_new_api_key(request.state.principal['api_key'],req.name,
+            **req.model_dump(exclude={'name'}))}
+    except (ValueError,PermissionError) as exc:
+        job_error(exc)
+
+
+@app.patch('/api/admin/keys/{key_id}')
+async def admin_update_key(key_id: str,req: AdminUpdateKeyRequest,request: Request):
+    try:
+        return await billing.update_managed_key(request.state.principal['api_key'],key_id,
+            req.model_dump(exclude={'request_id'},exclude_none=True),req.request_id)
+    except LookupError as exc:
+        raise HTTPException(404,str(exc))
+    except (ValueError,PermissionError) as exc:
+        job_error(exc)
+
+
+@app.post('/api/admin/keys/{key_id}/credits')
+async def admin_adjust_credits(key_id: str,req: AdminCreditRequest,request: Request):
+    try:
+        return await billing.adjust_managed_credits(request.state.principal['api_key'],key_id,req.delta,req.note,req.request_id)
+    except LookupError as exc:
+        raise HTTPException(404,str(exc))
+    except (ValueError,PermissionError) as exc:
+        job_error(exc)
+
+
+@app.post('/api/admin/keys/{key_id}/revoke')
+async def admin_revoke_key(key_id: str,req: AdminRevokeRequest,request: Request):
+    try:
+        return await billing.revoke_api_key(request.state.principal,key_id,req.request_id)
+    except LookupError as exc:
+        raise HTTPException(404,str(exc))
+    except (ValueError,PermissionError) as exc:
+        job_error(exc)
 
 
 @app.get("/api/jobs")

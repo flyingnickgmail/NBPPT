@@ -80,6 +80,15 @@ class BillingManager:
                     note TEXT,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS admin_actions (
+                    request_id TEXT PRIMARY KEY,
+                    actor_user_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             async with db.execute("PRAGMA table_info(media_jobs)") as cur:
@@ -205,81 +214,180 @@ class BillingManager:
             raise PermissionError('Administrator required')
         return row[0]
 
-    async def create_new_api_key(self, current_api_key: str, key_name: str, *, allow_claude=False, daily_credit_limit=240) -> Dict[str, Any]:
+    async def create_new_api_key(self, current_api_key: str, key_name: str, *, allow_claude=False, daily_credit_limit=240,
+                                 initial_credits=0, scope='generate', request_id=None) -> Dict[str, Any]:
         """Issue a separate tenant, never an alias of the administrator's account."""
         if type(allow_claude) is not bool or type(daily_credit_limit) is not int or not 1 <= daily_credit_limit <= 5000:
             raise ValueError('Invalid key permissions or daily limit')
         if not isinstance(key_name, str) or not 1 <= len(key_name.strip()) <= 80:
             raise ValueError('密钥名称须为1–80字')
+        if type(initial_credits) is not int or not 0 <= initial_credits <= 1000000 or scope not in ('generate','read'):
+            raise ValueError('Invalid initial credits or scope')
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute('BEGIN IMMEDIATE')
-            await self._require_key_admin(db, current_api_key)
+            actor = await self._require_key_admin(db, current_api_key)
+            values = {'name':key_name.strip(),'allow_claude':allow_claude,'daily_credit_limit':daily_credit_limit,'initial_credits':initial_credits,'scope':scope}
+            request_id, fingerprint, previous = await self._admin_action(db, actor, request_id, 'CREATE_KEY', '', values)
+            if previous:
+                async with db.execute('SELECT api_key,is_active FROM mcp_api_keys WHERE user_id=?', (previous['user_id'],)) as cur:
+                    key = next((r for r in await cur.fetchall() if hashlib.sha256(r[0].encode()).hexdigest()==previous['key_id']), None)
+                if not key or not key[1]:
+                    raise ValueError('原请求的密钥已停用，不会重新创建')
+                return {**previous, 'api_key':key[0]}
             # A permission flag cannot authorize another tenant to borrow personal OAuth.
             if allow_claude:
                 raise PermissionError('独立账户尚无适用的 Claude 授权，不能借用个人持有人的登录')
             new_key = f"sk-mcp-{secrets.token_urlsafe(32)}"
             user_id = str(uuid.uuid4())
             ts = now_iso()
-            await db.execute("INSERT INTO users (id,phone_or_email,tier,credits_available,credits_frozen,created_at) VALUES (?,?,'studio',0,0,?)",
-                             (user_id, f'account-{user_id}@local.invalid', ts))
+            await db.execute("INSERT INTO users (id,phone_or_email,tier,credits_available,credits_frozen,created_at) VALUES (?,?,'studio',?,0,?)",
+                             (user_id, f'account-{user_id}@local.invalid', initial_credits, ts))
             await db.execute(
-                "INSERT INTO mcp_api_keys (api_key,user_id,name,daily_credit_limit,is_active,created_at,scope,allow_claude) VALUES (?,?,?,?,1,?,'generate',0)",
-                (new_key, user_id, key_name.strip(), daily_credit_limit, ts),
+                "INSERT INTO mcp_api_keys (api_key,user_id,name,daily_credit_limit,is_active,created_at,scope,allow_claude) VALUES (?,?,?,?,1,?,?,0)",
+                (new_key, user_id, key_name.strip(), daily_credit_limit, ts, scope),
             )
+            if initial_credits:
+                await db.execute("INSERT INTO credit_ledger(user_id,job_id,action,amount,balance_after,note,created_at) VALUES (?,?,'ADMIN_ADJUST',?,?,?,?)",
+                                 (user_id,'admin_'+request_id,initial_credits,initial_credits,f'管理员 {actor} 创建账户时分配',ts))
+            result = {'key_id': hashlib.sha256(new_key.encode()).hexdigest(), 'user_id': user_id,
+                      'name': key_name.strip(), 'scope': scope, 'allow_claude': False,
+                      'daily_credit_limit': daily_credit_limit, 'credits_available': initial_credits, 'created_at': ts}
+            await self._save_admin_action(db, actor, request_id, 'CREATE_KEY', user_id, fingerprint, result)
             await db.commit()
-            return {'api_key': new_key, 'key_id': hashlib.sha256(new_key.encode()).hexdigest(), 'user_id': user_id,
-                    'name': key_name.strip(), 'scope': 'generate', 'allow_claude': False,
-                    'daily_credit_limit': daily_credit_limit, 'credits_available': 0, 'created_at': ts}
+            return {**result, 'api_key':new_key}
+
+    @staticmethod
+    async def _admin_action(db, actor, request_id, action, target, values):
+        import re
+        request_id = request_id or str(uuid.uuid4())
+        if not isinstance(request_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,80}',request_id):
+            raise ValueError('Invalid request_id')
+        fingerprint = hashlib.sha256(json.dumps([action,target,values],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+        async with db.execute('SELECT actor_user_id,fingerprint,result_json FROM admin_actions WHERE request_id=?',(request_id,)) as cur:
+            row=await cur.fetchone()
+        if row:
+            if row[0]!=actor or row[1]!=fingerprint:
+                raise ValueError('操作编号已用于其他请求；未执行本次修改')
+            return request_id,fingerprint,json.loads(row[2])
+        return request_id,fingerprint,None
+
+    @staticmethod
+    async def _save_admin_action(db, actor, request_id, action, target, fingerprint, result):
+        await db.execute('INSERT INTO admin_actions VALUES (?,?,?,?,?,?,?)',
+                         (request_id,actor,action,target,fingerprint,json.dumps(result,ensure_ascii=False),now_iso()))
+
+    @staticmethod
+    async def _managed_key(db, key_id):
+        async with db.execute('SELECT api_key,user_id,scope,is_active FROM mcp_api_keys') as cur:
+            row=next((r for r in await cur.fetchall() if hashlib.sha256(r[0].encode()).hexdigest()==key_id),None)
+        if not row:
+            raise LookupError('Key not found')
+        return row
 
     async def list_managed_keys(self, current_api_key):
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             await self._require_key_admin(db, current_api_key)
             db.row_factory = aiosqlite.Row
-            async with db.execute('SELECT api_key,user_id,name,scope,allow_claude,daily_credit_limit,is_active,created_at FROM mcp_api_keys ORDER BY created_at DESC') as cur:
+            async with db.execute('''SELECT k.api_key,k.user_id,k.name,k.scope,k.allow_claude,k.daily_credit_limit,k.is_active,k.created_at,
+                u.credits_available,u.credits_frozen,coalesce(s.spent,0) AS daily_spent,
+                (SELECT count(*) FROM mcp_api_keys a WHERE a.user_id=k.user_id) AS account_key_count
+                FROM mcp_api_keys k JOIN users u ON u.id=k.user_id
+                LEFT JOIN (SELECT user_id,sum(-amount) AS spent FROM credit_ledger WHERE action='FREEZE' AND substr(created_at,1,10)=? GROUP BY user_id) s ON s.user_id=k.user_id
+                ORDER BY k.created_at DESC,k.rowid DESC''',(now_iso()[:10],)) as cur:
                 rows = [dict(row) for row in await cur.fetchall()]
         for row in rows:
             raw = row.pop('api_key')
             row.update(key_id=hashlib.sha256(raw.encode()).hexdigest(), api_key='***'+raw[-4:], allow_claude=bool(row['allow_claude']))
+            row['is_current'] = secrets.compare_digest(raw,current_api_key)
+            row['effective_daily_limit'] = min(row['daily_credit_limit'],int(os.getenv('NBPPT_DAILY_CREDITS','1200')))
+            row['claude_eligible'] = os.getenv('NBPPT_CLAUDE_ENABLED','false').lower()=='true' and row['user_id']==os.getenv('NBPPT_CLAUDE_OWNER_USER_ID','').strip()
         return rows
 
-    async def set_key_claude_permission(self, current_api_key, key_id, allow_claude):
-        if type(allow_claude) is not bool:
+    async def update_managed_key(self, current_api_key, key_id, values, request_id=None):
+        if not values or set(values)-{'name','scope','daily_credit_limit','allow_claude'}:
+            raise ValueError('Invalid key settings')
+        if 'name' in values and (not isinstance(values['name'],str) or not 1<=len(values['name'].strip())<=80):
+            raise ValueError('密钥名称须为1–80字')
+        if 'daily_credit_limit' in values and (type(values['daily_credit_limit']) is not int or not 1<=values['daily_credit_limit']<=5000):
+            raise ValueError('每日上限须为1–5000整数')
+        if 'allow_claude' in values and type(values['allow_claude']) is not bool:
             raise ValueError('allow_claude must be a boolean')
+        if 'scope' in values and values['scope'] not in ('generate','read'):
+            raise ValueError('只能设置生成或只读权限')
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute('BEGIN IMMEDIATE')
-            await self._require_key_admin(db, current_api_key)
-            async with db.execute('SELECT api_key,user_id,is_active FROM mcp_api_keys') as cur:
-                row = next((r for r in await cur.fetchall() if hashlib.sha256(r[0].encode()).hexdigest() == key_id), None)
-            if row is None:
-                raise LookupError('Key not found')
-            if not row[2]:
-                raise ValueError('Key is revoked')
-            if allow_claude:
+            actor=await self._require_key_admin(db,current_api_key)
+            request_id,fingerprint,previous=await self._admin_action(db,actor,request_id,'UPDATE_KEY',key_id,values)
+            if previous:return previous
+            raw,user,scope,active=await self._managed_key(db,key_id)
+            if not active:raise ValueError('Key is revoked')
+            if scope=='admin' and 'scope' in values:
+                raise PermissionError('管理员密钥的管理权限不能在此降级')
+            if values.get('allow_claude'):
                 from gateway.ppt_contract import require_claude_owner
-                require_claude_owner(row[1])
-            await db.execute('UPDATE mcp_api_keys SET allow_claude=? WHERE api_key=?', (int(allow_claude), row[0]))
+                require_claude_owner(user)
+            for column,value in values.items():
+                await db.execute(f'UPDATE mcp_api_keys SET {column}=? WHERE api_key=?',(value.strip() if column=='name' else value,raw))
+            result={'key_id':key_id,'user_id':user,**values}
+            await self._save_admin_action(db,actor,request_id,'UPDATE_KEY',key_id,fingerprint,result)
             await db.commit()
-        return {'key_id': key_id, 'user_id': row[1], 'allow_claude': allow_claude}
+        return result
 
-    async def revoke_api_key(self, principal, key_id):
+    async def adjust_managed_credits(self, current_api_key, key_id, delta, note, request_id):
+        if type(delta) is not int or not -1000000<=delta<=1000000 or delta==0:
+            raise ValueError('调整点数须为非零整数，绝对值不超过100万')
+        if not isinstance(note,str) or not 1<=len(note.strip())<=200:
+            raise ValueError('请填写1–200字的调整原因')
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute('BEGIN IMMEDIATE')
-            await self._require_key_admin(db, principal['api_key'])
-            async with db.execute('SELECT api_key FROM mcp_api_keys') as cur:
-                keys = await cur.fetchall()
-            key = next((r[0] for r in keys if hashlib.sha256(r[0].encode()).hexdigest() == key_id), None)
-            if key is None:
-                raise ValueError('Key not found')
+            actor=await self._require_key_admin(db,current_api_key)
+            values={'delta':delta,'note':note.strip()}
+            request_id,fingerprint,previous=await self._admin_action(db,actor,request_id,'ADJUST_CREDITS',key_id,values)
+            if previous:return previous
+            _,user,_,_=await self._managed_key(db,key_id)
+            async with db.execute('SELECT credits_available,credits_frozen FROM users WHERE id=?',(user,)) as cur:
+                available,frozen=await cur.fetchone()
+            if available+delta<0:raise ValueError('减额超过可用余额，冻结点数不参与调整')
+            balance=available+delta
+            await db.execute('UPDATE users SET credits_available=? WHERE id=?',(balance,user))
+            await db.execute("INSERT INTO credit_ledger(user_id,job_id,action,amount,balance_after,note,created_at) VALUES (?,?,'ADMIN_ADJUST',?,?,?,?)",
+                             (user,'admin_'+request_id,delta,balance,f'管理员 {actor}：{note.strip()}',now_iso()))
+            result={'user_id':user,'delta':delta,'note':note.strip(),'credits_available':balance,'credits_frozen':frozen}
+            await self._save_admin_action(db,actor,request_id,'ADJUST_CREDITS',key_id,fingerprint,result)
+            await db.commit()
+        return result
+
+    async def list_admin_actions(self,current_api_key,limit=30):
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await self._require_key_admin(db,current_api_key)
+            db.row_factory=aiosqlite.Row
+            async with db.execute('SELECT request_id,actor_user_id,action,target_id,result_json,created_at FROM admin_actions ORDER BY rowid DESC LIMIT ?', (max(1,min(limit,100)),)) as cur:
+                return [{**dict(r),'result':json.loads(r['result_json'])} for r in await cur.fetchall()]
+
+    async def set_key_claude_permission(self, current_api_key, key_id, allow_claude):
+        return await self.update_managed_key(current_api_key,key_id,{'allow_claude':allow_claude})
+
+    async def revoke_api_key(self, principal, key_id, request_id=None):
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('BEGIN IMMEDIATE')
+            actor=await self._require_key_admin(db, principal['api_key'])
+            request_id,fingerprint,previous=await self._admin_action(db,actor,request_id,'REVOKE_KEY',key_id,{})
+            if previous:return previous
+            key,_,_,_=await self._managed_key(db,key_id)
             if key == principal['api_key']:
                 raise ValueError('Cannot revoke the current administrator credential')
             await db.execute('UPDATE mcp_api_keys SET is_active=0 WHERE api_key=?', (key,))
             await db.execute('DELETE FROM web_sessions WHERE api_key=?', (key,))
+            result={'revoked':True,'key_id':key_id}
+            await self._save_admin_action(db,actor,request_id,'REVOKE_KEY',key_id,fingerprint,result)
             await db.commit()
-        return {'revoked': True}
+        return result
 
     async def try_freeze_credits(
         self, api_key: str, job_id: str, task_type: str, cn_prompt: str, freeze_amount: int, request_hash: str | None = None,
