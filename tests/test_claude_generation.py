@@ -57,6 +57,18 @@ def test_disabled_provider_rejected_before_freeze(manager, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_video_cannot_silently_substitute_claude_with_codex(manager, monkeypatch):
+    monkeypatch.setenv("NBPPT_CLAUDE_ENABLED", "true")
+    async def scenario():
+        jobs = PresentationJobs(manager)
+        with pytest.raises(ValueError, match="视频尚未开放 Claude"):
+            await jobs.create({"user_id": "a", "api_key": KEY_A, "scope": "generate"},
+                              "产品介绍", "auto", 0, "claude-video-01", task_type="video", execution_mode="claude_cli")
+        assert balance(manager) == (2000, 0)
+        assert not jobs.tasks
+    asyncio.run(scenario())
+
+
 def test_claude_retry_keeps_provider_and_refunds(manager, monkeypatch):
     monkeypatch.setenv("NBPPT_CLAUDE_ENABLED", "true")
     async def scenario():

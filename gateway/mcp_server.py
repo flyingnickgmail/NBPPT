@@ -47,6 +47,8 @@ class PresentationJobs:
         self._require_scope(principal, write=True)
         if task_type not in ('ppt', 'video'):
             raise ValueError('PPT和视频须分别创建任务，以便独立结算和重试')
+        if task_type == 'video' and execution_mode not in ('auto', 'codex_cli'):
+            raise ValueError('视频尚未开放 Claude 执行，不能替换成其他引擎')
         engine = resolve_ppt_engine(execution_mode) if task_type == 'ppt' else 'codex_cli'
         if task_type == 'video':
             from gateway.video_contract import VIDEO_VOICES
