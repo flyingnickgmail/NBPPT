@@ -51,6 +51,9 @@ function controls() {
   const allowed = authenticated && ready && canGenerate && !busy;
   for (const name of ['ppt','video','composite']) $(`mode-${name}`).disabled = busy || (name !== 'ppt' && capabilities?.delivery_modes.video.supported !== true);
   $('submit').disabled = !allowed; $('account').disabled = busy;
+  $('ppt-engine').disabled = busy || !ready;
+  $('claude-engine-option').disabled = !capabilities?.delivery_modes.ppt.execution_modes?.includes('claude_cli');
+  if ($('ppt-engine').value === 'claude_cli' && $('claude-engine-option').disabled) $('ppt-engine').value = 'codex_cli';
   $('submit').textContent = busy ? '正在提交…' : authenticated ? (!canGenerate ? '当前凭据仅可查看任务' : mode === 'composite' ? '开始生成 PPT＋视频 →' : `开始生成${labels[mode]} →`) : '登录后开始生成 →';
   for (const kind of ['ppt','video']) $(`retry-${kind}`).disabled = !allowed;
 }
@@ -64,7 +67,7 @@ function updateMode(next) {
 }
 function updateSummary() {
   const parts = [$('style').selectedOptions[0].text];
-  if (mode !== 'video') parts.push($('pages').selectedOptions[0].text);
+  if (mode !== 'video') parts.push($('pages').selectedOptions[0].text, $('ppt-engine').value === 'claude_cli' ? 'Claude 矢量排版' : 'Codex 图片创作');
   if (mode !== 'ppt') parts.push(`${$('video-duration').value} 秒`, $('video-ratio').value);
   $('config-summary').textContent = parts.join(' · ');
 }
@@ -180,7 +183,7 @@ async function pollKind(kind) {
 async function refreshWallet() { const authEpoch = epoch; const data = await api('/api/wallet'); if (authEpoch !== epoch || !authenticated) return; $('wallet').textContent = `可用 ${data.user.credits_available} 点`; }
 function payloadFor(kind, task = activeTask) {
   const input = task.input;
-  return {source:input.source, template_id:input.template_id || 'auto', slide_count:Number(input.slide_count || 0), task_type:kind, video_duration_sec:Number(input.video_duration_sec || 30), video_aspect_ratio:input.video_aspect_ratio || '16:9', video_voice:input.video_voice || 'melo', video_narration:input.video_narration !== false, video_subtitles:input.video_subtitles !== false, request_id:task.request_ids[kind]};
+  return {source:input.source, template_id:input.template_id || 'auto', slide_count:Number(input.slide_count || 0), task_type:kind, execution_mode:kind === 'ppt' ? (input.execution_mode || 'codex_cli') : 'codex_cli', video_duration_sec:Number(input.video_duration_sec || 30), video_aspect_ratio:input.video_aspect_ratio || '16:9', video_voice:input.video_voice || 'melo', video_narration:input.video_narration !== false, video_subtitles:input.video_subtitles !== false, request_id:task.request_ids[kind]};
 }
 async function submitKind(kind) {
   const task = activeTask;
@@ -260,6 +263,7 @@ $('brief').onsubmit = async event => {
   event.preventDefault(); if (busy || !authenticated || !ready || !canGenerate) return;
   const requestedMode = mode;
   const input = {source:$('source').value.trim(), template_id:$('style').value, slide_count:Number($('pages').value), video_duration_sec:Number($('video-duration').value), video_aspect_ratio:$('video-ratio').value, video_voice:$('video-voice').value || 'melo', video_narration:$('video-narration').value !== 'off', video_subtitles:$('video-captions').value !== 'off'};
+  if ($('ppt-engine').value === 'claude_cli') input.execution_mode = 'claude_cli';
   if (input.source.length < 20) return notice('请至少输入20个字的原文与要求。');
   if (mode !== 'ppt' && (!Number.isInteger(input.video_duration_sec) || input.video_duration_sec < 6 || input.video_duration_sec > 60)) return notice('视频时长须为 6–60 秒整数。');
   busy = true; controls(); notice();
@@ -291,7 +295,7 @@ $('history-open').onclick = async () => {
 $('history-close').onclick = () => $('history').close(); $('back-edit').onclick = showComposer; $('resume-task').onclick = showTask;
 $('refresh').onclick = () => { notice(); if (activeTask) kindsFor(activeTask.mode).forEach(kind => activeTask.jobs[kind] && pollKind(kind)); };
 $('source').oninput = () => { $('count').textContent = `${$('source').value.length} 字`; }; $('example').onclick = () => { $('source').value = sample; $('source').oninput(); $('source').focus(); };
-for (const id of ['style','pages','video-duration','video-ratio']) $(id).onchange = updateSummary;
+for (const id of ['style','pages','ppt-engine','video-duration','video-ratio']) $(id).onchange = updateSummary;
 for (let i=1;i<=5;i++) { const b = document.createElement('button'); b.type='button'; b.setAttribute('aria-label',`查看样例第${i}页`); b.setAttribute('aria-pressed',String(i===3)); const img=document.createElement('img'); img.src=`/static/samples/slide_preview_${i}.png`; img.alt=''; b.append(img); b.onclick=()=> { $('gallery-main').src=img.src; $('gallery-main').alt=`已有样例第${i}页`; $('gallery-count').textContent=`${i} / 5`; [...$('gallery-picks').children].forEach(c=>c.setAttribute('aria-pressed',String(c===b))); }; $('gallery-picks').append(b); }
 $('slide').onerror = () => notice('PPT预览图片加载失败，请刷新状态或重新登录。'); $('video-player').onerror = () => notice('视频预览加载失败，请刷新状态或下载文件检查。');
 updateMode('ppt');

@@ -25,6 +25,14 @@ Ubuntu 24.04 安装 `nbppt-bwrap.apparmor` 至 `/etc/apparmor.d/nbppt-bwrap` 并
 
 ## HTTPS 与更新
 
+### 可选：官方 Claude Code 生成 PPT
+
+保持 Codex 为默认引擎。安装官方 Claude Code 至 `/usr`、`librsvg2-bin` 及 `fonts-noto-cjk`，为 `nbppt-worker` 配置独立官方 OAuth 登录：`/var/lib/nbppt-worker/.claude/.credentials.json`（0600），最小账号元信息位于 `.claude.json`；不要复制个人 hooks、plugins 或 MCP 配置。以 worker 身份和实际 systemd 限制验证登录、SVG 渲染和中文字体后，再在两个环境文件中设置 `NBPPT_CLAUDE_ENABLED=true`，worker 另加 `CLAUDE_BIN=/usr/bin/claude`、`NBPPT_CLAUDE_MODEL=sonnet`。保持 `NBPPT_REQUIRE_ISOLATION=true`。
+
+页面、REST 和 MCP `create_presentation` 可选择 `execution_mode=claude_cli`。Claude 使用英文任务指令读取原文、规划并绘制独立 SVG 页面，调用可信渲染器生成 PNG，再逐页自检；PPTX/HTML 仍由现有严格文件检查与封装器处理。未启用、登录失效、预算耗尽或缺文件会失败退款，不切回其他引擎。当前 PPTX 为整页图片，文字不可直接编辑；模型自检不等于独立内容审核。CLI 的美元用量为估算，不代表 Pro 订阅实际扣款。该开关不开放 Claude 视频路径。
+
+回退：两个环境文件设 `NBPPT_CLAUDE_ENABLED=false` 并在无运行中任务时重启 worker/gateway，原 Codex 默认路径保持可用。保留失败任务及账目，不回滚数据库。
+
 Certbot >=5.4 支持 IP 证书。使用 webroot + shortlived profile 为服务器 IP 签发；80端口只用于 ACME 与跳转，443代理127.0.0.1:8000。安装 nginx.conf 时按实际 IP 和证书路径调整。
 安装续期 service/timer，`systemctl enable --now nbppt-cert-renew.timer`；执行 `certbot renew --dry-run`，检查证书和 timer 的下次运行时间。IP 证书有效期很短，需持续监测 timer 失败和到期时间。
 

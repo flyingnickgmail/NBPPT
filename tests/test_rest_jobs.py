@@ -138,6 +138,7 @@ def test_rest_read_scope_capabilities_and_verified_artifacts(manager, monkeypatc
             assert caps.json()["delivery_modes"]["ppt"] == {
                 "supported": True, "freeze_credits": 60, "progress": True,
                 "preview_after_validation": True, "retry": True,
+                "execution_modes": ["codex_cli"],
             }
             assert caps.json()["delivery_modes"]["video"]["supported"] is True
             assert caps.json()["partial_preview"] is False

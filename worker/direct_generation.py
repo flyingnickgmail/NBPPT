@@ -16,6 +16,7 @@ from pptx.util import Inches
 
 from gateway.delivery import inspect_delivery, delivery_urls, safe_job_id
 from worker.isolation import isolated_command
+from gateway.ppt_contract import resolve_ppt_engine
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED_SKILL = ROOT / "worker" / "skills" / "source-image-deck" / "SKILL.md"
@@ -140,6 +141,10 @@ def validate_images(assets, count):
 def package_deck(job_id, job_dir, spec):
     plan = json.loads((job_dir / "deck_plan.json").read_text())
     slides = validate_plan(plan, spec)
+    engine = spec.get("generator_engine", "codex_cli")
+    if engine == "claude_cli":
+        from worker.claude_generation import validate_svg_sources
+        validate_svg_sources(job_dir / "staging/assets", slides)
     review = json.loads((job_dir / "review.json").read_text())
     if review.get("reviewed_pages") != list(range(1, len(slides) + 1)) or review.get("issues") != []:
         raise ValueError("生成代理未完成逐页自检或仍有问题")
@@ -157,7 +162,7 @@ def package_deck(job_id, job_dir, spec):
     from worker.worker_api import _build_fullscreen_image_html_deck
     actual_spec = {**spec, "task_summary_cn": plan.get("task_summary_cn", spec["task_summary_cn"]),
                    "slide_outline": slides, "slide_count": len(slides),
-                   "compiler_engine": "Codex 技能直出（原文规划）", "is_real_llm": True}
+                   "compiler_engine": f"{'Claude' if engine == 'claude_cli' else 'Codex'} 技能直出（原文规划）", "is_real_llm": True}
     _build_fullscreen_image_html_deck(actual_spec, images, output / f"{job_id}_deck_interactive.html")
     qa = {"status": "PASSED", "planned_slides": len(slides), "delivered_slides": len(images),
           "pptx_size_kb": round(pptx.stat().st_size / 1024, 1),
@@ -183,21 +188,32 @@ async def stop_process(proc):
                 await proc.wait()
 
 
-async def generate_deck_stream(req, jobs_root, codex_bin, semaphore):
+async def generate_deck_stream(req, jobs_root, codex_bin, semaphore, claude_bin=None):
     proc = None
     acquired = False
     try:
         safe_job_id(req.job_id)
         spec = req.english_spec
+        engine = resolve_ppt_engine(spec.get("generator_engine", getattr(req, "execution_mode", "auto")))
+        spec = {**spec, "generator_engine": engine}
+        label = "Claude" if engine == "claude_cli" else "Codex"
+        if engine == "claude_cli" and not claude_bin:
+            raise ValueError("Claude 执行器未配置")
         job_dir = jobs_root / req.job_id
         # A retry must not accidentally reuse a previous run's deck or images.
         job_dir.mkdir(parents=True, exist_ok=False)
         (job_dir / "staging/assets").mkdir(parents=True)
         (job_dir / "source.md").write_text(spec["original_prompt_cn"], encoding="utf-8")
         (job_dir / "template.json").write_text(json.dumps(spec.get("matched_template", {}), ensure_ascii=False), encoding="utf-8")
-        prompt = build_prompt(spec)
+        if engine == "claude_cli":
+            from worker import claude_generation
+            prompt = claude_generation.build_prompt(spec)
+            refs = claude_generation.references(spec.get("matched_template", {}))
+        else:
+            prompt = build_prompt(spec)
+            refs = skill_references(spec.get("matched_template", {}))
         (job_dir / "agent_prompt.txt").write_text(prompt, encoding="utf-8")
-        yield event("progress", pct=28, message_cn="原文已完整交给 Codex：按技能规划内容，模板仅约束品牌风格。")
+        yield event("progress", pct=28, message_cn=f"原文已完整交给 {label}：按技能规划内容，模板仅约束品牌风格。")
         while not acquired:
             try:
                 await asyncio.wait_for(semaphore.acquire(), timeout=10)
@@ -213,16 +229,19 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore):
                 env.update({k: proxy for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")})
             cmd = [codex_bin, "exec", "-m", "gpt-6-astra", "-c", 'model_reasoning_effort="high"']
             config = Path.home() / ".codex/config.toml"
-            if config.is_file() and os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() != "true":
+            if engine == "codex_cli" and config.is_file() and os.getenv("NBPPT_REQUIRE_ISOLATION", "false").lower() != "true":
                 for name in tomllib.loads(config.read_text()).get("mcp_servers", {}):
                     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                         raise ValueError("MCP 配置名称包含不支持的字符，请为执行节点使用独立配置")
                     cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
             cmd += ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", prompt]
-            cmd, _ = isolated_command(cmd, job_dir, skill_references(spec.get("matched_template", {})))
+            if engine == "claude_cli":
+                cmd = claude_generation.command(claude_bin, prompt, req.max_budget_usd)
+            cmd, _ = isolated_command(cmd, job_dir, refs, agent="claude" if engine == "claude_cli" else "codex")
             timeout = max(1800, (spec["slide_count"] or 15) * 180)
             started = time.monotonic()
-            with (job_dir / "codex_exec.log").open("wb") as log:
+            log_path = job_dir / ("claude_exec.log" if engine == "claude_cli" else "codex_exec.log")
+            with log_path.open("wb") as log:
                 proc = await asyncio.create_subprocess_exec(*cmd, cwd=job_dir, env=env,
                     stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
                 wait_task = asyncio.create_task(proc.wait())
@@ -232,18 +251,19 @@ async def generate_deck_stream(req, jobs_root, codex_bin, semaphore):
                     except asyncio.TimeoutError:
                         elapsed = int(time.monotonic() - started)
                         if elapsed > timeout:
-                            raise TimeoutError("Codex 生成超时，未使用模板兜底")
+                            raise TimeoutError(f"{label} 生成超时，未使用模板兜底")
                         count = len(list((job_dir / "staging/assets").glob("slide_preview_*.png")))
-                        yield event("progress", pct=min(85, 35 + count * 3), message_cn=f"Codex 正在规划、绘制和自检；任务内已有 {count} 页图片，耗时 {elapsed} 秒。")
+                        yield event("progress", pct=min(85, 35 + count * 3), message_cn=f"{label} 正在规划、绘制和自检；任务内已有 {count} 页图片，耗时 {elapsed} 秒。")
             if proc.returncode != 0:
-                raise RuntimeError(f"Codex 执行失败（退出码 {proc.returncode}），未使用模板兜底")
+                raise RuntimeError(f"{label} 执行失败（退出码 {proc.returncode}），未使用模板兜底")
+            cost = claude_generation.reported_cost(log_path) if engine == "claude_cli" else None
         finally:
             await stop_process(proc)
             semaphore.release()
             acquired = False
         actual_spec, qa = package_deck(req.job_id, job_dir, spec)
-        yield event("completed", pct=100, total_cost_usd=round(0.08 * actual_spec["slide_count"], 4),
-                    cost_is_estimate=True, used_real_claude_cli=False, used_real_codex_cli=True,
+        yield event("completed", pct=100, total_cost_usd=round(cost if cost is not None else 0.08 * actual_spec["slide_count"], 6),
+                    cost_is_estimate=True, used_real_claude_cli=engine == "claude_cli", used_real_codex_cli=engine == "codex_cli",
                     compiled_spec=actual_spec, qa_report=qa,
                     cdn_urls=delivery_urls(req.job_id, json.loads((job_dir / "output/delivery.json").read_text())))
     except Exception as exc:

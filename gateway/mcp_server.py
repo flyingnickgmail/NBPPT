@@ -16,6 +16,7 @@ from gateway.config import get_runtime_settings, TASK_FREEZE_CREDITS
 from gateway.deepseek_compiler import compile_cn_request_to_english_spec, validate_direct_completion
 from gateway.delivery import verify_published, delivery_urls, safe_job_id
 from gateway.template_registry import list_available_templates, match_template_for_prompt
+from gateway.ppt_contract import resolve_ppt_engine
 
 
 class PresentationJobs:
@@ -41,10 +42,12 @@ class PresentationJobs:
 
     async def create(self, principal, source, template_id, slide_count, request_id,
                      task_type='ppt', video_duration_sec=30, video_aspect_ratio='16:9',
-                     video_voice='melo', video_narration=True, video_subtitles=True):
+                     video_voice='melo', video_narration=True, video_subtitles=True,
+                     execution_mode='auto'):
         self._require_scope(principal, write=True)
         if task_type not in ('ppt', 'video'):
             raise ValueError('PPT和视频须分别创建任务，以便独立结算和重试')
+        engine = resolve_ppt_engine(execution_mode) if task_type == 'ppt' else 'codex_cli'
         if task_type == 'video':
             from gateway.video_contract import VIDEO_VOICES
             if video_voice not in VIDEO_VOICES or type(video_narration) is not bool or type(video_subtitles) is not bool:
@@ -61,6 +64,8 @@ class PresentationJobs:
         if template_id != "auto" and template_id not in {t['id'] for t in list_available_templates()}:
             raise ValueError("未知模板，请先调用list_templates")
         arguments = {"source": source, "template_id": template_id, "slide_count": slide_count}
+        if engine == 'claude_cli':
+            arguments['execution_mode'] = engine
         if task_type == 'video':
             arguments.update(task_type='video', slide_count=0, video_duration_sec=video_duration_sec,
                              video_aspect_ratio=video_aspect_ratio, video_voice=video_voice,
@@ -116,7 +121,7 @@ class PresentationJobs:
                         'matched_template': match_template_for_prompt(arguments['source'], arguments['template_id'])}
             else:
                 spec = await compile_cn_request_to_english_spec(arguments['source'], 'ppt',
-                    {"slide_count": arguments['slide_count'], "template_id": arguments['template_id'], "execution_mode": "codex_cli"})
+                    {"slide_count": arguments['slide_count'], "template_id": arguments['template_id'], "execution_mode": arguments.get('execution_mode', 'codex_cli')})
                 spec['requested_slide_count'] = arguments['slide_count']
             spec['_request'] = arguments
             await self.billing.save_compiled_spec(job_id, spec)
@@ -126,7 +131,7 @@ class PresentationJobs:
                 async with client.stream('POST', runtime['overseas_worker_url'] + '/internal/execute-stream',
                     headers={'X-Worker-Secret': runtime['overseas_worker_secret']},
                     json={'job_id': job_id, 'task_type': task_type, 'english_spec': spec,
-                          'execution_mode': 'codex_cli', 'max_budget_usd': .85,
+                          'execution_mode': arguments.get('execution_mode', 'codex_cli'), 'max_budget_usd': .85,
                           'runtime_keys': {'account_safe_proxy': runtime.get('account_safe_proxy', '')}}) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
@@ -160,7 +165,9 @@ class PresentationJobs:
                 if validated != actual_spec['video_scenes']:
                     raise ValueError('Video completion contains unnormalised storyboard')
             else:
-                actual_spec = validate_direct_completion(completed)
+                actual_spec = validate_direct_completion(completed, spec)
+                if actual_spec.get('generator_engine', 'codex_cli') != arguments.get('execution_mode', 'codex_cli'):
+                    raise ValueError('PPT completion does not match the admitted provider')
                 actual_spec['requested_slide_count'] = arguments['slide_count']
             actual_spec['_request'] = arguments
             await self.billing.save_compiled_spec(job_id, actual_spec)
@@ -220,7 +227,8 @@ class PresentationJobs:
                                  video_aspect_ratio=arguments.get('video_aspect_ratio', '16:9'),
                                  video_voice=arguments.get('video_voice', 'melo'),
                                  video_narration=arguments.get('video_narration', True),
-                                 video_subtitles=arguments.get('video_subtitles', True))
+                                 video_subtitles=arguments.get('video_subtitles', True),
+                                 execution_mode=arguments.get('execution_mode', 'auto'))
 
     async def artifacts(self, principal, job_id):
         job = await self.owned_job(principal, job_id)
@@ -264,9 +272,11 @@ def build_mcp(jobs):
     async def create_presentation(ctx: Context,
         source: Annotated[str, Field(min_length=1, max_length=100000)],
         request_id: Annotated[str, Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')],
-        template_id: str = 'auto', slide_count: Annotated[int, Field(ge=0, le=60)] = 0) -> dict:
+        template_id: str = 'auto', slide_count: Annotated[int, Field(ge=0, le=60)] = 0,
+        execution_mode: str = 'auto') -> dict:
         """提交完整原文生成PPT，立即返回job_id。0页表示由内容决定。消耗平台算力点。"""
-        return await jobs.create(principal(ctx), source, template_id, slide_count, request_id)
+        return await jobs.create(principal(ctx), source, template_id, slide_count, request_id,
+                                 execution_mode=execution_mode)
 
     @server.tool()
     async def create_video(ctx: Context,

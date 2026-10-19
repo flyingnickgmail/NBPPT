@@ -10,7 +10,7 @@
 | 工具 | 作用 |
 | --- | --- |
 | `list_templates` | 列出品牌风格参考，不暴露主机文件路径 |
-| `create_presentation` | `source` 完整原文、`request_id` 幂等编号、`template_id`、`slide_count`；立即返回任务编号 |
+| `create_presentation` | `source` 完整原文、`request_id` 幂等编号、`template_id`、`slide_count`、可选 `execution_mode=auto/codex_cli/claude_cli`；Claude 须由服务端启用，默认仍为 Codex；立即返回任务编号 |
 | `create_video` | `source`、`request_id`、`template_id`、`duration_seconds`（6–60）、`aspect_ratio`（16:9或9:16）；中文讲解MP4、旁白和字幕 |
 | `retry_job` | 对自己失败且已退款的 PPT/视频，以新的 `request_id` 重试；不会重做组合任务中另一项 |
 | `get_job_status` | 查询当前用户的进度，运行中建议间隔30秒 |

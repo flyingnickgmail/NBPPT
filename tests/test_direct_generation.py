@@ -130,16 +130,17 @@ def test_existing_job_never_reused(tmp_path):
     assert asyncio.run(run())[-1]["type"] == "error"
 
 
-def test_failed_legacy_planner_does_not_return_sample(monkeypatch):
+def test_failed_legacy_video_planner_does_not_return_sample(monkeypatch):
     monkeypatch.setattr("gateway.deepseek_compiler.get_runtime_settings", lambda: {})
     with pytest.raises(RuntimeError, match="未生成替代内容"):
-        asyncio.run(compile_cn_request_to_english_spec("客户原文", "ppt", {"execution_mode": "claude_cli"}))
+        asyncio.run(compile_cn_request_to_english_spec("客户原文", "video", {"execution_mode": "claude_cli"}))
 
 
 @pytest.mark.parametrize("worker_status", ["PASSED", "PARTIAL", "error"])
 def test_gateway_saves_actual_plan_and_only_settles_passed(monkeypatch, worker_status):
     from gateway import main
     actual = {**spec(), **plan(), "generation_contract": "skill-direct-v1"}
+    monkeypatch.setattr(main, "compile_cn_request_to_english_spec", AsyncMock(return_value=actual))
     billing = SimpleNamespace(
         try_freeze_credits=AsyncMock(return_value={"balance_after_freeze": 100}),
         save_compiled_spec=AsyncMock(), cancel_refund=AsyncMock(return_value={}),

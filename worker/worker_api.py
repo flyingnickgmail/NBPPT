@@ -374,8 +374,15 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
         if req.task_type != "ppt" or not req.job_id.startswith("ppt_"):
             raise HTTPException(422, "PPT contract requires a PPT job")
         from worker.direct_generation import generate_deck_stream
+        from gateway.ppt_contract import resolve_ppt_engine
+        try:
+            engine = resolve_ppt_engine(req.english_spec.get("generator_engine", req.execution_mode))
+            if req.execution_mode != "auto" and req.execution_mode != engine:
+                raise ValueError("PPT 生成引擎与任务约定不一致")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
         return StreamingResponse(
-            generate_deck_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE),
+            generate_deck_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE, CLAUDE_BIN),
             media_type="text/event-stream",
         )
 

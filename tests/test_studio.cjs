@@ -50,6 +50,29 @@ const response = (body,status=200) => ({ok:status<400,status,json:async()=>body}
 const tick = () => new Promise(resolve=>setImmediate(resolve));
 const sourceText = '完整测试内容，展示问题进展以及下周的责任分工和验收标准。';
 
+test('Claude selection is advertised explicitly and stays on the PPT side of composite jobs', async () => {
+  const requests=[];
+  const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs') {
+      const payload=JSON.parse(options.body);requests.push(payload);
+      return response({job_id:payload.task_type==='ppt'?'ppt_0123456789':'video_abcdef0123'});
+    }
+    if(path==='/api/wallet') return response({user:{credits_available:1800}});
+    return response({status:'RUNNING',stage:'queued'});
+  });
+  h.api.set({capabilities:{delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli']},video:{supported:true}}}});
+  h.api.updateMode('composite'); h.get('source').value=sourceText;h.get('ppt-engine').value='claude_cli';
+  h.api.controls(); assert.equal(h.get('claude-engine-option').disabled,false);
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  assert.equal(requests.length,2);
+  assert.equal(requests.find(x=>x.task_type==='ppt').execution_mode,'claude_cli');
+  assert.equal(requests.find(x=>x.task_type==='video').execution_mode,'codex_cli');
+  assert.equal(h.api.get().activeTask.input.execution_mode,'claude_cli');
+  h.api.set();h.get('ppt-engine').value='claude_cli';h.api.controls();
+  assert.equal(h.get('claude-engine-option').disabled,true);
+  assert.equal(h.get('ppt-engine').value,'codex_cli');
+});
+
 test('changing mode while digest is pending cannot add an unrequested video job', async () => {
   let release;
   const gate = new Promise(resolve => {release=resolve;});

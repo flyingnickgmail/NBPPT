@@ -147,6 +147,7 @@ class AsyncCreateJobRequest(BaseModel):
     slide_count: int = Field(default=0, ge=0, le=60)
     request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,80}$")
     task_type: Literal['ppt', 'video'] = 'ppt'
+    execution_mode: Literal['auto', 'codex_cli', 'claude_cli'] = 'auto'
     video_duration_sec: int = Field(default=30, ge=6, le=60, strict=True)
     video_aspect_ratio: Literal['16:9', '9:16'] = '16:9'
     video_voice: Literal['melo', 'kokoro_female', 'kokoro_male'] = 'melo'
@@ -201,9 +202,11 @@ async def get_templates():
 
 
 def production_capabilities():
+    from gateway.ppt_contract import available_ppt_engines
     return {
         "ppt": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"],
-                "progress": True, "preview_after_validation": True, "retry": True},
+                "progress": True, "preview_after_validation": True, "retry": True,
+                "execution_modes": available_ppt_engines()},
         "video": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["video"],
                   "progress": True, "preview_after_validation": True, "retry": True,
                   "planner_providers": {"codex_cli": True, "claude_cli": False},
@@ -368,7 +371,8 @@ async def create_job(req: AsyncCreateJobRequest, request: Request):
         return await mcp_jobs.create(request.state.principal, req.source, req.template_id,
                                      req.slide_count, req.request_id, req.task_type,
                                      req.video_duration_sec, req.video_aspect_ratio,
-                                     req.video_voice, req.video_narration, req.video_subtitles)
+                                     req.video_voice, req.video_narration, req.video_subtitles,
+                                     execution_mode=req.execution_mode)
     except (ValueError, PermissionError) as exc:
         job_error(exc, conflict="request_id已用于" in str(exc))
 
@@ -413,8 +417,14 @@ async def retry_job(job_id: str, req: RetryJobRequest, request: Request):
 async def stream_create_job(req: CreateJobRequest, request: Request):
     if request.state.principal.get("scope", "generate") not in {"admin", "generate"}:
         raise HTTPException(403, "Credential scope does not allow generation")
-    if os.getenv('NBPPT_REQUIRE_ISOLATION', 'false').lower() == 'true' and (req.task_type != 'ppt' or req.execution_mode not in ('auto', 'codex_cli')):
+    if os.getenv('NBPPT_REQUIRE_ISOLATION', 'false').lower() == 'true' and req.task_type != 'ppt':
         raise HTTPException(422, '当前部署仅开放隔离运行的 Codex PPT 生成')
+    if req.task_type == 'ppt':
+        from gateway.ppt_contract import resolve_ppt_engine
+        try:
+            resolve_ppt_engine(req.execution_mode)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
     api_key = request.state.principal["api_key"]
     task_type = req.task_type if req.task_type in TASK_FREEZE_CREDITS else "ppt"
     freeze_amount = TASK_FREEZE_CREDITS[task_type]
@@ -455,8 +465,8 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
                 if task_type == "ppt"
                 else "正在梳理【逻辑大纲 + Claude 图形化动效分镜脚本】"
             )
-            if task_type == "ppt" and req.execution_mode != "claude_cli":
-                engine_desc = "Codex 技能直出"
+            if task_type == "ppt":
+                engine_desc = "Claude 技能直出" if req.execution_mode == "claude_cli" else "Codex 技能直出"
                 role_desc = "保留完整原文与客户风格，由生成代理统一规划和绘图"
             yield f"data: {json.dumps({'type': 'progress', 'pct': 20, 'job_id': job_id, 'message_cn': f'[主控 Agent 强逻辑推理] 调用 {engine_desc}，{role_desc}...'}, ensure_ascii=False)}\n\n"
 
@@ -522,7 +532,7 @@ async def stream_create_job(req: CreateJobRequest, request: Request):
                 raise RuntimeError("未收到算力底座完成信号")
 
             if en_spec.get("generation_contract") == "skill-direct-v1":
-                en_spec = validate_direct_completion(final_worker_evt)
+                en_spec = validate_direct_completion(final_worker_evt, en_spec)
                 await billing.save_compiled_spec(job_id, en_spec)
 
             settle_info = await billing.confirm_settle(

@@ -67,6 +67,13 @@
 <p class="note">模板约束视觉风格，各页或场景按内容选用不同版式。</p>
 <div id="ppt-options">
 <div class="config-row">
+<label for="ppt-engine">PPT 生成引擎</label>
+<select id="ppt-engine">
+<option value="codex_cli">Codex · 图片创作</option>
+<option id="claude-engine-option" value="claude_cli" disabled>Claude · 矢量排版</option>
+</select>
+</div>
+<div class="config-row">
 <label for="pages">PPT 页数</label>
 <select id="pages">
 <option value="0">自动</option>
