@@ -335,7 +335,7 @@ def test_rejects_job_storage_inside_login_home(tmp_path,enabled):
     with pytest.raises(ValueError):native_deck.validate_job_location(enabled.home/'jobs',enabled)
 
 
-def test_capabilities_and_worker_execution_both_enforce_owner(manager,enabled,monkeypatch):
+def test_capabilities_require_key_grant_and_worker_requires_runtime_binding(manager,enabled,monkeypatch):
     from worker import worker_api
     async def run():
         jobs=PresentationJobs(manager)
@@ -344,7 +344,7 @@ def test_capabilities_and_worker_execution_both_enforce_owner(manager,enabled,mo
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),base_url='https://test') as c:
             other=await c.get('/api/capabilities',headers={'Authorization':'Bearer '+KEY_B})
             assert other.json()['delivery_modes']['ppt']['execution_modes']==['codex_cli']
-            denied=await c.post('/api/jobs',headers={'Authorization':'Bearer '+KEY_B},json={'source':'不能借用持有人订阅','slide_count':2,'execution_mode':'claude_cli','request_id':'owner-bypass-001'})
+            denied=await c.post('/api/jobs',headers={'Authorization':'Bearer '+KEY_B},json={'source':'未授权的密钥不能使用Claude','slide_count':2,'execution_mode':'claude_cli','request_id':'owner-bypass-001'})
             assert denied.status_code==403
         monkeypatch.setattr(worker_api,'WORKER_SECRET','test-worker-'+'x'*40)
         req=worker_api.JobExecutionRequest(job_id='ppt_c1a0de0008',task_type='ppt',english_spec={'generation_contract':'skill-direct-v1','generator_engine':'claude_cli','account_owner_user_id':'b'},execution_mode='claude_cli')

@@ -95,7 +95,7 @@ def test_permission_toggle_denies_rest_mcp_retry_and_legacy_before_freeze(manage
             assert (await client.get('/api/providers/claude/status',headers=headers)).status_code == 403
             assert (await client.post('/api/jobs',headers=headers,json={'source':'test','execution_mode':mode,'request_id':'disabled-rest-01'})).status_code == 403
             assert (await client.post('/api/jobs/stream',headers=headers,json={'prompt_cn':'test','execution_mode':mode})).status_code == 403
-            # Admin can restore an eligible holder's permission, but cannot grant another tenant.
+            # Each credential can be granted independently, including another tenant's key.
             assert (await client.patch('/api/wallet/keys/'+key_id, headers=admin,json={'allow_claude':True})).status_code == 200
             await jobs.require_claude_access(principal)
             other_id = hashlib.sha256(KEY_B.encode()).hexdigest()

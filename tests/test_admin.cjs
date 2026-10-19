@@ -44,8 +44,8 @@ test('uncertain credit request reuses its id and blocks changing the amount unti
 });
 
 test('confirmed business denial releases the request id without logging out a valid admin',async()=>{
-  const h=harness(async()=>response({detail:'这份 Claude 个人登录只允许持有人使用'},403));
-  await assert.rejects(h.api.mutate('settings','/key','PATCH',{allow_claude:true}),/持有人/);
+  const h=harness(async()=>response({detail:'当前密钥未获准使用 Claude'},403));
+  await assert.rejects(h.api.mutate('settings','/key','PATCH',{allow_claude:true}),/未获准/);
   assert.equal(h.api.get().pending,0);assert.equal(h.redirects.length,0);
 });
 
