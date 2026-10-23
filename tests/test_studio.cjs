@@ -6,13 +6,14 @@ const {webcrypto} = require('node:crypto');
 
 function harness(fetch, crypto = webcrypto) {
   const nodes = new Map(), storage = new Map(), timers = new Set();
+  const location={origin:'http://test',assign(url){this.lastURL=url;},replace(url){this.lastURL=url;}};
   function element(tag = '') {
     return {
       tagName:String(tag).toUpperCase(), hidden:false, disabled:false, children:[], value:'', textContent:'', open:false,
-      selectedOptions:[{text:'自动匹配'}], className:'',
-      setAttribute(k,v){ this[k]=v; }, removeAttribute(k){ delete this[k]; }, replaceChildren(...x){ this.children=x; },
+      selectedOptions:[{text:'自动匹配'}], className:'', dataset:{},
+      getAttribute(k){return this[k] ?? null;}, setAttribute(k,v){ this[k]=v; }, removeAttribute(k){ delete this[k]; }, replaceChildren(...x){ this.children=x; },
       append(...x){ this.children.push(...x); }, add(x){ this.children.push(x); }, showModal(){ this.open=true; }, close(){ this.open=false; },
-      focus(){ this.focused=true; }, pause(){ this.paused=true; }, load(){ this.loads=(this.loads || 0)+1; }
+      focus(){ this.focused=true; }, async play(){this.paused=false;}, pause(){ this.paused=true; }, load(){ this.loads=(this.loads || 0)+1; }
     };
   }
   const get = id => {
@@ -28,7 +29,7 @@ function harness(fetch, crypto = webcrypto) {
     document:{getElementById:get, createElement:tag=>element(tag)},
     sessionStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,String(v)),removeItem:k=>storage.delete(k)},
     fetch, URL, Option:class { constructor(text,value){ this.text=text; this.value=value; } }, crypto, TextEncoder, Uint8Array,
-    location:{origin:'http://test'}, setTimeout:fn=>{timers.add(fn);return fn;}, clearTimeout:fn=>timers.delete(fn)
+    location, setTimeout:fn=>{timers.add(fn);return fn;}, clearTimeout:fn=>timers.delete(fn)
   });
   let source = fs.readFileSync('gateway/static/studio.js','utf8');
   source = source.slice(0, source.lastIndexOf("updateMode('ppt');"));
@@ -43,7 +44,7 @@ function harness(fetch, crypto = webcrypto) {
       },
       get(){return {activeTask,authenticated,ready,mode,states:{ppt:states.ppt,video:states.video},deliveries:{ppt:deliveries.ppt,video:deliveries.video}}}
     };`, ctx);
-  return {api:ctx.testApi, get, timers, storage};
+  return {api:ctx.testApi, get, timers, storage, location};
 }
 
 const response = (body,status=200) => ({ok:status<400,status,json:async()=>body});
@@ -351,4 +352,89 @@ test('MCP-created history tasks restore the engine and full request before rende
   h.api.activateTask({mode:'ppt',input:{},jobs:{ppt:'ppt_0123456789'},request_ids:{},submit_errors:{}});await tick();
   assert.equal(h.api.get().activeTask.input.execution_mode,'claude_codex');assert.equal(steps[0].textContent,'Claude 内容策划');
   assert.match(h.get('request-config').textContent,/6 页.*Claude 策划 → Codex 绘图/);assert.equal(h.get('request-source').textContent,sourceText);
+});
+
+test('Claude video preserves its own provider in a composite submission', async()=>{
+  const requests=[];
+  const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs'){const body=JSON.parse(options.body);requests.push(body);return response({job_id:body.task_type==='video'?'video_abcdef0123':'ppt_0123456789'});}
+    if(path.startsWith('/api/jobs/'))return response({status:'RUNNING',stage:'writing',percent:22});
+    if(path==='/api/wallet')return response({user:{credits_available:1000}});
+    throw Error(path);
+  });
+  h.api.set({mode:'composite'});h.get('source').value=sourceText;h.get('video-engine').value='claude_cli';h.get('ppt-engine').value='codex_cli';
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  assert.equal(requests.find(x=>x.task_type==='video').execution_mode,'claude_cli');
+  assert.equal(requests.find(x=>x.task_type==='ppt').execution_mode,'codex_cli');
+});
+
+test('Claude video cooldown stops submit and retry without switching providers',()=>{
+  const h=harness(async()=>response({}));h.api.set({mode:'video',activeTask:{input:{video_execution_mode:'claude_cli'}},capabilities:{delivery_modes:{ppt:{execution_modes:['codex_cli','claude_cli']},video:{supported:true}},providers:{claude_cli:{state:'blocked',message:'需要授权'}}}});
+  h.get('video-engine').value='claude_cli';h.api.controls();
+  assert.equal(h.get('submit').disabled,true);assert.equal(h.get('retry-video').disabled,true);
+  assert.equal(h.get('video-engine').value,'claude_cli');
+});
+
+test('video manuscripts use owned artifact paths and clear on logout',()=>{
+  const h=harness(async()=>response({}));h.api.set();
+  h.api.renderVideo({artifacts:{mp4_url:'/artifacts/video_abcdef0123/video.mp4',manuscript_url:'/artifacts/video_abcdef0123/content_manuscript.md',narration_url:'/artifacts/video_abcdef0123/narration.txt',storyboard_url:'/artifacts/video_abcdef0123/storyboard.json',storyboard_preview_url:'/artifacts/video_abcdef0123/assets/storyboard.png'}},'video_abcdef0123');
+  assert.equal(h.get('video-writing-downloads').hidden,false);
+  assert.equal(h.get('video-manuscript').href,'/artifacts/video_abcdef0123/content_manuscript.md');
+  h.api.clearSession();assert.equal(h.get('video-manuscript').href,undefined);assert.equal(h.get('video-storyboard-preview').src,undefined);
+});
+
+
+test('configured Claude defaults to real footage and preserves manual visual choice',()=>{
+  const h=harness(async()=>response({}));
+  h.api.set({mode:'video',capabilities:{delivery_modes:{ppt:{execution_modes:['codex_cli','claude_cli']},video:{supported:true,visual_modes:['motion','live_action']}},providers:{claude_cli:{state:'ready'}}}});
+  h.get('video-engine').value='claude_cli';h.api.controls();
+  assert.equal(h.get('video-visual').value,'live_action');
+  h.get('video-visual').value='motion';h.get('video-visual').dataset.chosen='true';h.api.controls();
+  assert.equal(h.get('video-visual').value,'motion');
+});
+
+test('voice controls show supported auditions and disable narration without losing its voice',async()=>{
+  const h=harness(async()=>response({}));h.api.set({mode:'video',capabilities:{delivery_modes:{ppt:{supported:true},video:{supported:true,voices:['microsoft_yunxi','microsoft_xiaoxiao']}}}});
+  h.get('video-narration').value='on';h.get('video-voice').value='microsoft_xiaoxiao';h.api.updateMode('video');
+  assert.equal(h.get('video-audio-options').hidden,false);assert.equal(h.get('video-voice-audition').disabled,false);
+  await h.get('video-voice-audition').onclick();assert.equal(h.get('video-voice-audio').hidden,false);assert.equal(h.get('video-voice-audio').paused,false);
+  assert.equal(h.get('video-voice-audio').src,'/static/voice-samples/microsoft_xiaoxiao.mp3');
+  h.get('video-narration').value='off';h.get('video-narration').onchange();
+  assert.equal(h.get('video-voice').disabled,true);assert.equal(h.get('video-voice').value,'microsoft_xiaoxiao');
+  assert.equal(h.get('video-voice-audition').disabled,true);assert.equal(h.get('video-voice-audio').paused,true);
+  h.get('video-narration').value='on';h.get('video-narration').onchange();assert.equal(h.get('video-voice').disabled,false);
+  h.api.updateMode('ppt');assert.equal(h.get('video-audio-options').hidden,true);
+});
+
+test('selected female voice and narration switch reach the real job request',async()=>{
+  const requests=[];const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs'){requests.push(JSON.parse(options.body));return response({job_id:'video_abcdef0123'});}
+    if(path==='/api/wallet')return response({user:{credits_available:920}});
+    return response({status:'RUNNING',stage:'queued'});
+  });
+  h.api.set({mode:'video'});h.get('source').value=sourceText;h.get('video-voice').value='microsoft_xiaoxiao';h.get('video-narration').value='off';
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  assert.equal(requests[0].video_voice,'microsoft_xiaoxiao');assert.equal(requests[0].video_narration,false);
+});
+
+test('voice choices are outside collapsed advanced settings and generic samples exist',()=>{
+  const html=fs.readFileSync('gateway/static/index.html','utf8');assert.ok(html.indexOf('id="video-audio-options"')<html.indexOf('<details class="creation-options">'));
+  for(const voice of ['microsoft_yunxi','microsoft_xiaoxiao'])assert.ok(fs.statSync(`gateway/static/voice-samples/${voice}.mp3`).size>1024);
+});
+
+test('report mode carries the current source to a private server draft',async()=>{
+  const requests=[];
+  const h=harness(async(path,options)=>{requests.push({path,body:JSON.parse(options.body)});return response({url:'/reports?draft=0123456789abcdef0123456789abcdef'});});
+  h.api.set();const fullSource='\n  '+sourceText+'\n';h.get('source').value=fullSource;
+  await h.get('mode-report').onclick();
+  assert.equal(requests.length,1);assert.equal(requests[0].path,'/api/reports/draft');
+  assert.equal(requests[0].body.content,fullSource);assert.equal(requests[0].body.mode,'ai');
+  assert.equal(h.location.lastURL,'/reports?draft=0123456789abcdef0123456789abcdef');
+  assert.ok(!JSON.stringify([...h.storage.values()]).includes(sourceText));
+});
+
+test('report mode respects pending submit and does not turn a read key into generation',async()=>{
+  let calls=0;const h=harness(async()=>{calls++;return response({});});h.get('source').value=sourceText;
+  h.api.set({busy:true});await h.get('mode-report').onclick();assert.equal(calls,0);assert.equal(h.location.lastURL,undefined);
+  h.api.set({canGenerate:false});await h.get('mode-report').onclick();assert.equal(calls,0);assert.equal(h.location.lastURL,'/reports');
 });

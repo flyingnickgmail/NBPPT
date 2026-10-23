@@ -140,7 +140,7 @@ def test_real_sdk_handshake_tools_and_validation(live_mcp):
     async def scenario():
         async with remote_client(config) as client:
             tools = await client.list_tools()
-            assert {t.name for t in tools.tools} == {'list_templates', 'create_presentation', 'create_video', 'retry_job', 'get_job_status', 'get_job_artifacts'}
+            assert {t.name for t in tools.tools} == {'list_templates', 'create_presentation', 'create_video', 'retry_job', 'get_job_status', 'get_job_artifacts', 'generate_research_report', 'get_research_report', 'generate_report_share_image', 'continue_research_report'}
             templates = await client.call_tool('list_templates', {})
             assert not templates.is_error
             result = await client.call_tool('create_presentation', {'source':'test', 'request_id':'bad', 'slide_count':2})

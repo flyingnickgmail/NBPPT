@@ -1,0 +1,38 @@
+.qualified-chart{--q-ink:var(--ink);--q-accent:var(--accent);--q-rule:var(--line);color:var(--q-ink)}
+.qualified-basis{font-size:13px;line-height:1.65;color:var(--muted);margin:0 0 22px;max-width:76ch}
+.qualified-scroll{overflow-x:auto;scrollbar-width:thin;padding-bottom:5px}
+.qualified-plot{min-width:520px}
+.qualified-row,.qualified-axis{display:grid;grid-template-columns:140px minmax(190px,1fr) 108px;gap:14px;align-items:center;width:100%;box-sizing:border-box}
+.qualified-row{background:transparent;color:inherit;border:0;border-bottom:1px solid var(--line);border-radius:0;min-height:88px;padding:0 10px;text-align:left;cursor:pointer;font:inherit}
+.qualified-row.emphasis{background:color-mix(in srgb,var(--accent) 4%,transparent)}.qualified-row:hover{background:color-mix(in srgb,var(--accent) 7%,transparent)}.qualified-row:focus-visible{outline:2px solid var(--q-accent);outline-offset:-2px}
+.qualified-label{font-size:15px;font-weight:600;line-height:1.55}.qualified-track{height:88px;position:relative;display:block}
+.qualified-guide{position:absolute;top:0;bottom:0;border-left:1px solid var(--line)}.qualified-guide.zero{border-left:1px dashed var(--muted)}
+.qualified-mark{position:absolute;top:50%;transform:translate(-50%,-50%);width:13px;height:13px;border-radius:50%;background:var(--q-ink);box-shadow:0 0 0 5px var(--paper)}
+.qualified-mark.approx,.qualified-mark.gt,.qualified-mark.lt,.qualified-mark.gte,.qualified-mark.lte{font:32px/28px Georgia,serif;width:28px;height:28px;background:var(--paper);text-align:center;box-shadow:none;border-radius:0}
+.qualified-mark.gte,.qualified-mark.lte{border-bottom:2px solid currentColor}
+.emphasis .qualified-mark.exact{background:var(--q-accent)}.emphasis .qualified-mark{color:var(--q-accent)}
+.qualified-value{font-size:22px;font-variant-numeric:tabular-nums;font-family:Georgia,'Times New Roman',serif;white-space:nowrap}.emphasis .qualified-value{color:var(--q-accent)}
+.qualified-value small{display:block;font:11px/1.5 system-ui,sans-serif;color:var(--muted);letter-spacing:.04em;margin-top:4px}
+.qualified-axis{padding:0 10px;color:var(--muted);font:11px/1.6 system-ui,sans-serif}.qualified-axis .qualified-track{height:38px}.qualified-tick{position:absolute;top:10px;transform:translateX(-50%);font-variant-numeric:tabular-nums}
+.qualified-legend{font-size:11px;line-height:1.8;color:var(--muted);margin:12px 0 0}
+@media(max-width:600px){.qualified-basis{font-size:12px}.qualified-row,.qualified-axis{grid-template-columns:80px minmax(100px,1fr) 75px;gap:8px}.qualified-plot{min-width:280px}.qualified-row{padding:0 4px}.qualified-value{font-size:19px}.qualified-label{font-size:13px}}
+@media print{.qualified-scroll{overflow:visible}.qualified-plot{min-width:0}.qualified-row{break-inside:avoid}}
+/* Editorial comparison: position and magnitude precede the precise reading. */
+.qualified-stem{position:absolute;top:50%;height:3px;margin-top:-1.5px;background:var(--q-ink);opacity:.55}
+.emphasis .qualified-stem{background:var(--q-accent);opacity:.9}
+.qualified-row{border-bottom:0;min-height:108px;padding-top:8px;padding-bottom:8px}
+.qualified-row.emphasis{background:none}.qualified-row:hover{background:color-mix(in srgb,var(--accent) 4%,transparent)}
+.qualified-value{font-size:30px;letter-spacing:-.03em}.qualified-mark{box-shadow:0 0 0 6px var(--paper)}
+.qualified-guide{border-color:color-mix(in srgb,var(--q-rule) 65%,transparent)}
+.qualified-pair .qualified-row{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto 56px;gap:0 18px;min-height:150px;padding:18px 8px 6px}
+.qualified-pair .qualified-label{grid-column:1;grid-row:1;font-size:18px}
+.qualified-pair .qualified-value{grid-column:2;grid-row:1;font-size:46px;text-align:right;line-height:1.1}
+.qualified-pair .qualified-value small{font-size:11px;letter-spacing:0}
+.qualified-pair .qualified-row>.qualified-track{grid-row:2;grid-column:1/-1;height:56px}
+.qualified-pair .qualified-axis{display:block;padding:0 8px}
+.qualified-pair .qualified-axis>span:first-child{display:block;margin:12px 0 0}
+.qualified-pair .qualified-axis>.qualified-track{width:100%;height:40px}
+.qualified-pair .qualified-axis>span:last-child{display:none}
+.qualified-pair .qualified-stem{height:8px;margin-top:-4px;opacity:.85}
+.qualified-pair .qualified-basis{margin-bottom:8px}
+@media(max-width:600px){.qualified-value{font-size:23px}.qualified-pair .qualified-label{font-size:15px}.qualified-pair .qualified-value{font-size:36px}.qualified-row{min-height:100px}.qualified-pair .qualified-row{min-height:135px}.qualified-pair .qualified-value small{font-size:10px}}

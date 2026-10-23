@@ -1,0 +1,4 @@
+interface:
+  display_name: "商业研究图形表达"
+  short_description: "从读者问题选择专业图表，设计有证据、可独立分享的研究内容图"
+  default_prompt: "使用 $business-visual-storytelling，根据这份材料选择能解释核心问题的图表，并设计友车科技风格的分享图。"

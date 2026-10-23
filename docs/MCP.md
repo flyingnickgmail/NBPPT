@@ -15,6 +15,10 @@
 | `retry_job` | 对自己失败且已退款的 PPT/视频，以新的 `request_id` 重试；不会重做组合任务中另一项 |
 | `get_job_status` | 查询当前用户的进度与结算，运行中建议间隔30秒 |
 | `get_job_artifacts` | 完成后重新检查摘要，返回文件列表、下载路径 |
+| `generate_research_report` | `content`原文、`title`、`request_id`；远程报告60积分，`mode=local`免费原文排版 |
+| `get_research_report` | 省略编号列出报告；传报告编号查询状态及预览，完成后用返回的`billing_job_id`调用`get_job_artifacts`下载 |
+| `generate_report_share_image` | 报告编号与`request_id`；分享图40积分，创建新版本，失败退款 |
+| `continue_research_report` | 报告编号与`request_id`；复审60积分，创建新版本，失败退款 |
 
 页数为0时自动决定，明确页数范围1–60。原文最多10万字。编号8–80位英文字母、数字、下划线或短横线。同一用户、同一编号、相同参数只创建一次、冻结一次；不同参数复用编号报错。失败后同编号仍返回原失败记录，只有明确再次生成时使用新编号。
 

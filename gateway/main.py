@@ -43,6 +43,7 @@ from gateway.template_registry import (
     match_template_for_prompt,
 )
 from gateway.mcp_server import PresentationJobs, build_mcp
+from gateway.reports import router as report_router, workspace as report_workspace
 
 @asynccontextmanager
 async def lifespan(app):
@@ -56,6 +57,7 @@ async def lifespan(app):
                 yield
             finally:
                 await mcp_jobs.close()
+                await report_workspace.shutdown()
 
 
 app = FastAPI(
@@ -71,6 +73,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(report_router)
+
 billing = BillingManager()
 mcp_jobs = PresentationJobs(billing)
 mcp_app = build_mcp(mcp_jobs)
@@ -83,21 +87,38 @@ JOBS_ROOT.mkdir(parents=True, exist_ok=True)
 async def access_control(request: Request, call_next):
     path = request.url.path
     admin_page = path in ('/admin','/static/admin.html')
-    protected = admin_page or path.startswith(("/api/", "/artifacts/")) or path == "/mcp" or path.startswith("/mcp/")
+    report_page = path in ('/reports', '/reports/') or path.startswith('/reports/')
+    report_api = path.startswith('/api/reports/')
+    protected = report_page or admin_page or path.startswith(("/api/", "/artifacts/")) or path == "/mcp" or path.startswith("/mcp/")
     try:
         if protected and not (path == "/api/session" and request.method == "POST"):
             request.state.principal = await authenticate_request(billing, request)
             if admin_page or path.startswith(("/api/admin/", "/api/settings/", "/api/wallet/keys/")) or path in ("/api/health/details", "/api/wallet/topup", "/api/wallet/keys"):
                 if request.state.principal["tier"] != "admin":
                     raise HTTPException(403, "Administrator required")
+        if report_api and request.method == 'POST':
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 10_000_000:
+                    raise HTTPException(413, '报告输入过大，请精简材料或缩小图片。')
+            request._body = bytes(body)
         response = await call_next(request)
     except HTTPException as exc:
-        if admin_page and exc.status_code==401:
+        if path in ('/reports', '/reports/') and exc.status_code == 401:
+            response=RedirectResponse('/?next=reports',status_code=303)
+        elif admin_page and exc.status_code==401:
             response=RedirectResponse('/?next=admin',status_code=303)
         elif admin_page:
             response=HTMLResponse('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>需要管理员权限</title><h1>需要管理员权限</h1><p>当前密钥没有管理权限，请返回工作台，使用管理员密钥登录。</p><a href="/">返回工作台</a></html>',status_code=exc.status_code)
         else:
             response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    except ValueError:
+        if not report_api:
+            raise
+        response=JSONResponse({'detail':'报告未通过材料、图表或版本校验，请核对后重试。'},status_code=422)
+    if report_api or report_page:
+        response.headers['Content-Security-Policy']="default-src 'self' blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     if protected:
@@ -158,9 +179,10 @@ class AsyncCreateJobRequest(BaseModel):
     request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,80}$")
     task_type: Literal['ppt', 'video'] = 'ppt'
     execution_mode: Literal['auto', 'codex_cli', 'claude_cli', 'claude_codex'] = 'auto'
-    video_duration_sec: int = Field(default=30, ge=6, le=60, strict=True)
+    video_duration_sec: int = Field(default=30, ge=6, le=180, strict=True)
+    video_visual_mode: str = "motion"
     video_aspect_ratio: Literal['16:9', '9:16'] = '16:9'
-    video_voice: Literal['melo', 'kokoro_female', 'kokoro_male'] = 'melo'
+    video_voice: Literal['melo', 'kokoro_female', 'kokoro_male', 'microsoft_yunxi', 'microsoft_xiaoxiao'] = 'melo'
     video_narration: bool = Field(default=True, strict=True)
     video_subtitles: bool = Field(default=True, strict=True)
 
@@ -220,15 +242,18 @@ async def get_templates():
 
 def production_capabilities(principal=None):
     from gateway.ppt_contract import available_ppt_engines
+    from gateway.voice_input import capability
     return {
+        "voice_input": capability(),
         "ppt": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"],
                 "progress": True, "preview_after_validation": True, "retry": True,
                 "execution_modes": available_ppt_engines(allow_claude=(principal or {}).get('allow_claude', False))},
         "video": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["video"],
                   "progress": True, "preview_after_validation": True, "retry": True,
-                  "planner_providers": {"codex_cli": True, "claude_cli": False},
-                  "narration": "melo_tts", "voices": ["melo"] + (["kokoro_female", "kokoro_male"] if os.getenv("NBPPT_KOKORO_ENABLED", "false").lower() == "true" else []),
-                  "burned_subtitles": True, "duration_range": [6, 60], "aspect_ratios": ["16:9", "9:16"]},
+                  "planner_providers": {"codex_cli": True, "claude_cli": "claude_cli" in available_ppt_engines(allow_claude=(principal or {}).get("allow_claude",False))},
+                  "narration": "melo_tts", "voices": ["melo"] + (["microsoft_yunxi", "microsoft_xiaoxiao"] if os.getenv("NBPPT_MICROSOFT_EDGE_ENABLED","false").lower()=="true" else []) + (["kokoro_female", "kokoro_male"] if os.getenv("NBPPT_KOKORO_ENABLED", "false").lower() == "true" else []),
+                  "manuscript": True, "voice_input": True,
+                  "burned_subtitles": True, "duration_range": [6, 180], "long_form_provider": "claude_cli", "visual_modes": ["motion"] + (["live_action"] if os.getenv("NBPPT_SCENE_SOURCE")=="search" or pathlib.Path(os.getenv("NBPPT_SCENE_CATALOG","/nonexistent")).is_file() else []), "aspect_ratios": ["16:9", "9:16"]},
         "composite": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"] + TASK_FREEZE_CREDITS["video"],
                       "progress": True, "preview_after_validation": True, "retry": True,
                       "submission": "independent_jobs"},
@@ -499,6 +524,17 @@ def job_error(exc: Exception, *, conflict: bool = False):
     raise HTTPException(409 if conflict else 422, str(exc))
 
 
+@app.post('/api/voice/transcribe')
+async def transcribe_voice(request: Request):
+    from gateway.voice_input import transcribe
+    try:
+        return await transcribe(request,request.state.principal)
+    except PermissionError as exc:
+        raise HTTPException(403,str(exc))
+    except (ValueError,TimeoutError) as exc:
+        raise HTTPException(422,str(exc) or '语音转写超时')
+
+
 @app.post("/api/jobs")
 async def create_job(req: AsyncCreateJobRequest, request: Request):
     try:
@@ -506,7 +542,7 @@ async def create_job(req: AsyncCreateJobRequest, request: Request):
                                      req.slide_count, req.request_id, req.task_type,
                                      req.video_duration_sec, req.video_aspect_ratio,
                                      req.video_voice, req.video_narration, req.video_subtitles,
-                                     execution_mode=req.execution_mode)
+                                     execution_mode=req.execution_mode, video_visual_mode=req.video_visual_mode)
     except (ValueError, PermissionError) as exc:
         job_error(exc, conflict="request_id已用于" in str(exc))
 

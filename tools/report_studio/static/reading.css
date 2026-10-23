@@ -1,0 +1,14 @@
+.reading-guide{margin:28px 0 14px;padding:22px 0 0;border-top:2px solid var(--ink)}
+.reading-guide-head{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px 16px}.reading-eyebrow{grid-column:1/-1;color:var(--accent);font:10px ui-monospace,monospace;letter-spacing:.16em}.reading-guide-head h3{font-family:var(--serif,serif);font-size:22px;margin:6px 0 14px;line-height:1.5}
+.reading-mode,.reading-resume{background:transparent;border:0;border-bottom:1px solid var(--line);color:var(--muted);padding:8px 0;font-size:11px;cursor:pointer}.reading-mode:hover,.reading-resume:hover{color:var(--accent)}
+.reading-steps{display:flex;gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.reading-step{flex:1;display:flex;align-items:flex-start;gap:9px;padding:16px 12px;background:none;color:var(--muted);border:0;border-right:1px solid var(--line);text-align:left;cursor:pointer;line-height:1.5}.reading-step:last-child{border-right:0}.reading-step strong{font-size:13px;font-weight:600}.reading-step-number{font:10px ui-monospace,monospace;margin-top:3px}.reading-step[aria-pressed=true]{background:var(--soft);color:var(--ink);box-shadow:inset 0 -3px var(--accent)}.reading-step[aria-pressed=true] .reading-step-number{color:var(--accent)}
+.reading-caption{font-size:14px!important;line-height:1.8;margin:16px 0 2px!important;color:var(--ink)}.reading-resume{font-size:10px}.has-reading-guide .chart[hidden]{display:none!important}.reading-paragraph{border-left:2px solid var(--accent);padding-left:14px}.reading-muted{opacity:.34!important;transition:opacity .25s ease}.reading-focus{opacity:1!important}.reading-focus .mechanism-node-card{stroke:var(--accent);stroke-width:2}.reading-focus .waterfall-label{fill:var(--accent)}
+@media(max-width:600px){.reading-guide-head{grid-template-columns:1fr}.reading-guide-head h3{font-size:20px;margin-bottom:0}.reading-mode{justify-self:start}.reading-steps{flex-direction:column}.reading-step{border-right:0;border-bottom:1px solid var(--line);padding:12px}.reading-caption{font-size:13px!important}}
+@media(prefers-reduced-motion:reduce){.reading-muted{transition:none}}
+@media print{.reading-steps,.reading-mode,.reading-resume{display:none}.has-reading-guide .chart[hidden]{display:block!important}.reading-muted{opacity:1!important}.reading-paragraph{border:0;padding:0}.reading-caption{display:none}}
+.has-reading-guide .reading-guide{margin-bottom:0}
+.edition-editorial .has-reading-guide .visual-grid>.chart{margin-top:0}
+.edition-editorial .has-reading-guide .chart h3{text-wrap:balance}
+.reading-muted{opacity:.62!important}
+/* A semantic row and its evidence buttons can share an item index. */
+.reading-muted .reading-muted{opacity:1!important}

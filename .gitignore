@@ -20,6 +20,7 @@ workspace/data/runtime_settings.json
 workspace/jobs/
 workspace/cdn_storage/
 workspace/acceptance-*/
+workspace/live-film-media/
 
 # Third-party heavy PPT template repositories (cloned on demand)
 worker/external_ppt_skills/
@@ -29,3 +30,8 @@ worker/external_ppt_skills/
 .idea/
 .vscode/
 *.log
+
+# Private report runtime and release evidence
+workspace/reports/
+workspace/data/reports/
+workspace/report-release/

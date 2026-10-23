@@ -45,7 +45,7 @@ async def call_remote(config, name, arguments):
 
 async def download_artifacts(config, result):
     job_id = result['job_id']
-    if not re.fullmatch(r'(?:ppt|video)_[0-9a-f]{10}', job_id):
+    if not re.fullmatch(r'(?:ppt|video|report|reportshare)_[0-9a-f]{10}', job_id):
         raise ValueError('Invalid job id')
     root = Path(config['download_dir']).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -61,6 +61,8 @@ async def download_artifacts(config, result):
             allowed = (name in (f'{job_id}_video.mp4', 'assets/video_poster.png', 'subtitles.vtt')) if job_id.startswith('video_') else (
                 name in (f'{job_id}_deck.pptx', f'{job_id}_deck_interactive.html', 'content_outline.md', 'content_plan.json') or
                 re.fullmatch(r'assets/slide_preview_[1-9][0-9]*\.png', name))
+            if job_id.startswith(('report_', 'reportshare_')):
+                allowed = name in ('report.json', 'report.html', 'overview.png')
             if not allowed:
                 raise ValueError('Unexpected artifact path')
             target = directory / name
@@ -125,6 +127,26 @@ def build_adapter(config):
         """下载已完成的PPTX/HTML/PNG或MP4/海报/VTT，核对摘要，返回本机文件路径。"""
         result = await call_remote(config, 'get_job_artifacts', {'job_id': job_id})
         return await download_artifacts(config, result)
+
+    @server.tool()
+    async def generate_research_report(content: str, request_id: str, title: str = '', mode: str = 'ai') -> dict:
+        """生成研究报告60积分；local为免费原文排版。重发须复用request_id。"""
+        return await call_remote(config, 'generate_research_report', dict(content=content, request_id=request_id, title=title, mode=mode))
+
+    @server.tool()
+    async def get_research_report(job_id: str = '') -> dict:
+        """查询自己的报告；完成后可用billing_job_id调用get_job_artifacts验证并下载。"""
+        return await call_remote(config, 'get_research_report', {'job_id': job_id})
+
+    @server.tool()
+    async def generate_report_share_image(job_id: str, request_id: str) -> dict:
+        """生成已保存报告的分享图40积分，失败退回；重发须复用request_id。"""
+        return await call_remote(config, 'generate_report_share_image', dict(job_id=job_id, request_id=request_id))
+
+    @server.tool()
+    async def continue_research_report(job_id: str, request_id: str) -> dict:
+        """继续复审报告60积分，创建新版本；重发须复用request_id。"""
+        return await call_remote(config, 'continue_research_report', dict(job_id=job_id, request_id=request_id))
 
     return server
 

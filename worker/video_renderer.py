@@ -437,6 +437,8 @@ def _encode(scene_files: list[Path], scenes: list[dict], output: Path, width: in
 
 
 def render_video(job_dir: Path, job_id: str, plan: dict) -> dict:
+    if __package__ in (None, ""):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     raw_job_dir = Path(job_dir)
     if raw_job_dir.is_symlink():
         raise RenderError("渲染目录与任务编号不匹配")
@@ -451,6 +453,12 @@ def render_video(job_dir: Path, job_id: str, plan: dict) -> dict:
     if assets.exists() and (not assets.is_dir() or assets.is_symlink() or
                             not assets.resolve().is_relative_to(staging.resolve())):
         raise RenderError("视频资源目录不安全")
+    if plan.get("video_visual_mode")=="live_action":
+        from worker.live_action_renderer import render_film
+        return render_film(job_dir,job_id,plan)
+    if plan.get("generation_contract") == "story-video-v2":
+        from worker.story_renderer import render_story
+        return render_story(job_dir,job_id,plan)
     frames_dir = staging / ".video-frames"
     assets.mkdir(parents=True, exist_ok=True)
     frames_dir.mkdir(parents=True, exist_ok=False)

@@ -96,6 +96,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from gateway.report_contract import WorkerReportRequest, parse_input
+
+
+@app.post('/internal/reports/execute-stream')
+async def execute_report(req: WorkerReportRequest, x_worker_secret: Optional[str] = Header(None)):
+    if len(WORKER_SECRET) < 32 or WORKER_SECRET == 'super-secret-mtls-token-2026' or not secrets.compare_digest(x_worker_secret or '', WORKER_SECRET):
+        raise HTTPException(403, 'Unauthorized worker secret')
+    try:
+        parse_input(req.spec)
+        expected = 'reportshare_' if req.spec['operation'] == 'overview' else 'report_'
+        if not req.job_id.startswith(expected):
+            raise ValueError('Report task mismatch')
+    except ValueError:
+        raise HTTPException(422, 'Invalid report request')
+    from worker.report_generation import report_stream
+    return StreamingResponse(report_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE), media_type='text/event-stream')
+
 
 class JobExecutionRequest(BaseModel):
     job_id: str
@@ -409,12 +426,12 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             media_type="text/event-stream",
         )
 
-    if req.english_spec.get("generation_contract") == "skill-video-v1":
+    if req.english_spec.get("generation_contract") in ("skill-video-v1", "story-video-v2"):
         if req.task_type != "video" or not req.job_id.startswith("video_"):
             raise HTTPException(422, "Video contract requires a video job")
         from worker.video_generation import generate_video_stream
         return StreamingResponse(
-            generate_video_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE),
+            generate_video_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE, CLAUDE_BIN),
             media_type="text/event-stream",
         )
 

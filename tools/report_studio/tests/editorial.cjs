@@ -1,0 +1,17 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
+const c={window:{}};
+for(const name of ['series','editorial_cover'])vm.runInNewContext(fs.readFileSync(path.join(__dirname,`../static/${name}.js`),'utf8'),c);
+c.ReportSeries=c.window.ReportSeries;
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../static/rankings.js'),'utf8'),c);
+const split=c.window.ReportEditorialCover.valueParts;
+assert.deepEqual({...split('同比超过120%')},{prefix:'同比超过',number:'120',suffix:'%'});
+assert.deepEqual({...split('逾百万辆')},{prefix:'',number:'逾百万辆',suffix:''});
+assert.deepEqual({...split('−4.5%')},{prefix:'',number:'−4.5',suffix:'%'});
+assert.deepEqual({...split('4-1/4 to 4-1/2%')},{prefix:'',number:'4-1/4 to 4-1/2%',suffix:''});
+const geo=c.window.ReportRankings.geometry([{value:-5},{value:-1}]);
+assert.equal(geo.position(0),1);assert.ok(geo.position(-5)<geo.position(-1));
+const zero=c.window.ReportRankings.geometry([{value:0},{value:0}]);assert.equal(zero.position(0),0);
+const original=[{value:140000},{value:100000},{value:95000},{value:75000},{value:40000}],before=JSON.stringify(original);
+const rank=c.window.ReportRankings.geometry(original);assert.equal(JSON.stringify(original),before);
+assert.equal(rank.position(100000)/rank.position(40000),2.5);
+console.log('Evidence qualifiers and categorical shared scale preserve source meaning');
