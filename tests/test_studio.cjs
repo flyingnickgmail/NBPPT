@@ -9,10 +9,10 @@ function harness(fetch, crypto = webcrypto) {
   function element(tag = '') {
     return {
       tagName:String(tag).toUpperCase(), hidden:false, disabled:false, children:[], value:'', textContent:'', open:false,
-      selectedOptions:[{text:'自动匹配'}], className:'',
-      setAttribute(k,v){ this[k]=v; }, removeAttribute(k){ delete this[k]; }, replaceChildren(...x){ this.children=x; },
+      selectedOptions:[{text:'自动匹配'}], className:'', dataset:{},
+      getAttribute(k){return this[k] ?? null;}, setAttribute(k,v){ this[k]=v; }, removeAttribute(k){ delete this[k]; }, replaceChildren(...x){ this.children=x; },
       append(...x){ this.children.push(...x); }, add(x){ this.children.push(x); }, showModal(){ this.open=true; }, close(){ this.open=false; },
-      focus(){ this.focused=true; }, pause(){ this.paused=true; }, load(){ this.loads=(this.loads || 0)+1; }
+      focus(){ this.focused=true; }, async play(){this.paused=false;}, pause(){ this.paused=true; }, load(){ this.loads=(this.loads || 0)+1; }
     };
   }
   const get = id => {
@@ -351,4 +351,72 @@ test('MCP-created history tasks restore the engine and full request before rende
   h.api.activateTask({mode:'ppt',input:{},jobs:{ppt:'ppt_0123456789'},request_ids:{},submit_errors:{}});await tick();
   assert.equal(h.api.get().activeTask.input.execution_mode,'claude_codex');assert.equal(steps[0].textContent,'Claude 内容策划');
   assert.match(h.get('request-config').textContent,/6 页.*Claude 策划 → Codex 绘图/);assert.equal(h.get('request-source').textContent,sourceText);
+});
+
+test('Claude video preserves its own provider in a composite submission', async()=>{
+  const requests=[];
+  const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs'){const body=JSON.parse(options.body);requests.push(body);return response({job_id:body.task_type==='video'?'video_abcdef0123':'ppt_0123456789'});}
+    if(path.startsWith('/api/jobs/'))return response({status:'RUNNING',stage:'writing',percent:22});
+    if(path==='/api/wallet')return response({user:{credits_available:1000}});
+    throw Error(path);
+  });
+  h.api.set({mode:'composite'});h.get('source').value=sourceText;h.get('video-engine').value='claude_cli';h.get('ppt-engine').value='codex_cli';
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  assert.equal(requests.find(x=>x.task_type==='video').execution_mode,'claude_cli');
+  assert.equal(requests.find(x=>x.task_type==='ppt').execution_mode,'codex_cli');
+});
+
+test('Claude video cooldown stops submit and retry without switching providers',()=>{
+  const h=harness(async()=>response({}));h.api.set({mode:'video',activeTask:{input:{video_execution_mode:'claude_cli'}},capabilities:{delivery_modes:{ppt:{execution_modes:['codex_cli','claude_cli']},video:{supported:true}},providers:{claude_cli:{state:'blocked',message:'需要授权'}}}});
+  h.get('video-engine').value='claude_cli';h.api.controls();
+  assert.equal(h.get('submit').disabled,true);assert.equal(h.get('retry-video').disabled,true);
+  assert.equal(h.get('video-engine').value,'claude_cli');
+});
+
+test('video manuscripts use owned artifact paths and clear on logout',()=>{
+  const h=harness(async()=>response({}));h.api.set();
+  h.api.renderVideo({artifacts:{mp4_url:'/artifacts/video_abcdef0123/video.mp4',manuscript_url:'/artifacts/video_abcdef0123/content_manuscript.md',narration_url:'/artifacts/video_abcdef0123/narration.txt',storyboard_url:'/artifacts/video_abcdef0123/storyboard.json',storyboard_preview_url:'/artifacts/video_abcdef0123/assets/storyboard.png'}},'video_abcdef0123');
+  assert.equal(h.get('video-writing-downloads').hidden,false);
+  assert.equal(h.get('video-manuscript').href,'/artifacts/video_abcdef0123/content_manuscript.md');
+  h.api.clearSession();assert.equal(h.get('video-manuscript').href,undefined);assert.equal(h.get('video-storyboard-preview').src,undefined);
+});
+
+
+test('configured Claude defaults to real footage and preserves manual visual choice',()=>{
+  const h=harness(async()=>response({}));
+  h.api.set({mode:'video',capabilities:{delivery_modes:{ppt:{execution_modes:['codex_cli','claude_cli']},video:{supported:true,visual_modes:['motion','live_action']}},providers:{claude_cli:{state:'ready'}}}});
+  h.get('video-engine').value='claude_cli';h.api.controls();
+  assert.equal(h.get('video-visual').value,'live_action');
+  h.get('video-visual').value='motion';h.get('video-visual').dataset.chosen='true';h.api.controls();
+  assert.equal(h.get('video-visual').value,'motion');
+});
+
+test('voice controls show supported auditions and disable narration without losing its voice',async()=>{
+  const h=harness(async()=>response({}));h.api.set({mode:'video',capabilities:{delivery_modes:{ppt:{supported:true},video:{supported:true,voices:['microsoft_yunxi','microsoft_xiaoxiao']}}}});
+  h.get('video-narration').value='on';h.get('video-voice').value='microsoft_xiaoxiao';h.api.updateMode('video');
+  assert.equal(h.get('video-audio-options').hidden,false);assert.equal(h.get('video-voice-audition').disabled,false);
+  await h.get('video-voice-audition').onclick();assert.equal(h.get('video-voice-audio').hidden,false);assert.equal(h.get('video-voice-audio').paused,false);
+  assert.equal(h.get('video-voice-audio').src,'/static/voice-samples/microsoft_xiaoxiao.mp3');
+  h.get('video-narration').value='off';h.get('video-narration').onchange();
+  assert.equal(h.get('video-voice').disabled,true);assert.equal(h.get('video-voice').value,'microsoft_xiaoxiao');
+  assert.equal(h.get('video-voice-audition').disabled,true);assert.equal(h.get('video-voice-audio').paused,true);
+  h.get('video-narration').value='on';h.get('video-narration').onchange();assert.equal(h.get('video-voice').disabled,false);
+  h.api.updateMode('ppt');assert.equal(h.get('video-audio-options').hidden,true);
+});
+
+test('selected female voice and narration switch reach the real job request',async()=>{
+  const requests=[];const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs'){requests.push(JSON.parse(options.body));return response({job_id:'video_abcdef0123'});}
+    if(path==='/api/wallet')return response({user:{credits_available:920}});
+    return response({status:'RUNNING',stage:'queued'});
+  });
+  h.api.set({mode:'video'});h.get('source').value=sourceText;h.get('video-voice').value='microsoft_xiaoxiao';h.get('video-narration').value='off';
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  assert.equal(requests[0].video_voice,'microsoft_xiaoxiao');assert.equal(requests[0].video_narration,false);
+});
+
+test('voice choices are outside collapsed advanced settings and generic samples exist',()=>{
+  const html=fs.readFileSync('gateway/static/index.html','utf8');assert.ok(html.indexOf('id="video-audio-options"')<html.indexOf('<details class="creation-options">'));
+  for(const voice of ['microsoft_yunxi','microsoft_xiaoxiao'])assert.ok(fs.statSync(`gateway/static/voice-samples/${voice}.mp3`).size>1024);
 });

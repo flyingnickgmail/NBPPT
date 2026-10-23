@@ -1,0 +1,3 @@
+# Optional, explicitly enabled Microsoft online voice integration.
+# Install alongside requirements.txt; not an Azure Speech SDK adapter.
+edge-tts==7.3.1

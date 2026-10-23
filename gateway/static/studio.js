@@ -20,10 +20,15 @@ function clearDelivery(kind) {
     $('thumbnails').replaceChildren(); $('ppt-panel').hidden = true;
   } else {
     $('video-player').pause(); $('video-player').removeAttribute('src'); $('video-player').removeAttribute('poster');
+    $('video-writing-downloads').hidden=true;
+    for (const id of ['video-manuscript','video-narration-script','video-storyboard']) $(id).removeAttribute('href');
+    $('video-storyboard-preview').removeAttribute('src');
     $('video-subtitles').removeAttribute('src'); $('video-player').load(); $('video-download').removeAttribute('href'); $('video-panel').hidden = true;
   }
 }
 function clearSession() {
+  $('video-voice-audio').pause(); $('video-voice-audio').hidden=true;
+  globalThis.configureVoiceInput?.(null,false);
   epoch++; clearTimers(); authenticated = false; ready = false; canGenerate = false; activeTask = null;
   states.ppt = states.video = null; clearDelivery('ppt'); clearDelivery('video');
   $('source').value = ''; $('count').textContent = '0 字'; $('history-list').replaceChildren(); $('history').close();
@@ -56,13 +61,38 @@ function showComposer() {
   for (const id of ['composer','welcome','compose-intro']) $(id).hidden = false;
   $('task-view').hidden = true; $('back-edit').hidden = true; $('resume-task').hidden = !activeTask;
 }
+function updateVoiceControls() {
+  const enabled=$('video-narration').value!=='off';
+  const voice=$('video-voice').value;
+  const samples={microsoft_yunxi:'/static/voice-samples/microsoft_yunxi.mp3',microsoft_xiaoxiao:'/static/voice-samples/microsoft_xiaoxiao.mp3'};
+  const src=enabled && capabilities?.delivery_modes.video.voices?.includes(voice) ? samples[voice] : null;
+  const audio=$('video-voice-audio');
+  $('video-narration').disabled=busy; $('video-voice').disabled=busy || !enabled;
+  $('video-voice-audition').disabled=!src;
+  if (audio.getAttribute('src') !== (src || null)) {
+    audio.pause(); audio.hidden=true;
+    if(src) audio.setAttribute('src',src); else audio.removeAttribute('src');
+    audio.load();
+  }
+  $('video-voice-help').textContent=!enabled ? '本次生成静音视频；已选音色保留，重新开启配音后生效。' : src ? '两种音色使用同一段口播试听。所选音色用于下一次生成，不修改已有成片。' : '当前音色暂无试听；仅展示服务器支持的音色。';
+}
 function controls() {
+  updateVoiceControls();
   const allowed = authenticated && ready && canGenerate && !busy;
   const supported = capabilities?.delivery_modes.ppt.execution_modes?.includes('claude_cli');
   const status = capabilities?.providers?.claude_cli;
   const paused = Boolean(status && status.state !== 'ready');
   for (const name of ['ppt','video','composite']) $(`mode-${name}`).disabled = busy || (name !== 'ppt' && capabilities?.delivery_modes.video.supported !== true);
   $('submit').disabled = !allowed || (mode !== 'video' && usesClaude($('ppt-engine').value) && paused); $('account').disabled = busy;
+  $('video-engine').disabled=busy; $('video-visual').disabled=busy;
+  $('video-live-option').disabled=!capabilities?.delivery_modes.video.visual_modes?.includes('live_action');
+  const videoClaude = mode !== 'ppt' && $('video-engine').value==='claude_cli';
+  if (videoClaude && !$('video-visual').dataset.chosen && capabilities?.delivery_modes.video.visual_modes?.includes('live_action')) $('video-visual').value='live_action';
+  if (videoClaude && (paused || !supported)) $('submit').disabled=true;
+  $('video-claude-status').hidden=!videoClaude;
+  $('video-claude-status').textContent=status?.message || '需要管理员为当前密钥开启 Claude 权限；不会自动更换制作引擎。';
+  $('video-claude-check').hidden=!videoClaude||!supported;
+  $('video-claude-check').disabled=busy||!ready;
   $('ppt-engine').disabled = busy || !ready;
   $('claude-engine-option').disabled = !supported || paused;
   $('hybrid-engine-option').disabled = !capabilities?.delivery_modes.ppt.execution_modes?.includes('claude_codex') || paused;
@@ -73,6 +103,7 @@ function controls() {
   $('submit').textContent = busy ? '正在提交…' : authenticated ? (!canGenerate ? '当前凭据仅可查看任务' : mode === 'composite' ? '开始生成 PPT＋视频 →' : `开始生成${labels[mode]} →`) : '登录后开始生成 →';
   for (const kind of ['ppt','video']) $(`retry-${kind}`).disabled = !allowed;
   if (paused && usesClaude(activeTask?.input.execution_mode)) $('retry-ppt').disabled = true;
+  if (paused && activeTask?.input.video_execution_mode==='claude_cli') $('retry-video').disabled=true;
 }
 function updateMode(next) {
   if (busy) return;
@@ -80,7 +111,7 @@ function updateMode(next) {
   if (next !== 'ppt' && capabilities && !capabilities.delivery_modes.video.supported) next = 'ppt';
   mode = next;
   for (const name of ['ppt','video','composite']) $(`mode-${name}`).setAttribute('aria-pressed', String(name === mode));
-  $('ppt-options').hidden = mode === 'video'; $('video-options').hidden = mode === 'ppt'; updateSummary(); updateCost(); controls();
+  $('video-audio-options').hidden = mode === 'ppt'; $('ppt-options').hidden = mode === 'video'; $('video-options').hidden = mode === 'ppt'; updateSummary(); updateCost(); controls();
 }
 function updateSummary() {
   const claude = usesClaude($('ppt-engine').value);
@@ -130,6 +161,11 @@ function renderVideo(result, jobId) {
   $('video-subtitles').default = result.video?.subtitles_burned !== true;
   if ($('video-subtitles').track) $('video-subtitles').track.mode = result.video?.subtitles_burned ? 'disabled' : 'showing';
   $('video-download').href = safeArtifact(links.mp4_url, jobId); $('video-player').load(); deliveries.video = result;
+  $('video-writing-downloads').hidden = !links.manuscript_url;
+  for (const [id,key] of [['video-manuscript','manuscript_url'],['video-narration-script','narration_url'],['video-storyboard','storyboard_url'],['video-storyboard-preview','storyboard_preview_url']]) {
+    if (links[key]) $(id)[id.endsWith('preview')?'src':'href']=safeArtifact(links[key],jobId);
+    else $(id).removeAttribute(id.endsWith('preview')?'src':'href');
+  }
   $('video-panel').hidden = false; updatePreview();
 }
 function updatePreview() {
@@ -138,7 +174,7 @@ function updatePreview() {
   if (deliveries.video) parts.push('视频已通过文件验收');
   $('preview-empty').hidden = parts.length > 0; $('preview-context').textContent = parts.length ? `${parts.join('；')}。内容仍需人工审阅。` : '';
 }
-function stageStep(stage) { return ({queued:-1,planning:0,outlining:0,generating:1,illustrating:1,rendering:1,checking:2,ready:3})[stage] ?? -1; }
+function stageStep(stage) { return ({queued:-1,planning:0,writing:0,storyboarding:1,outlining:0,generating:1,illustrating:1,rendering:1,checking:2,ready:3})[stage] ?? -1; }
 function renderTrack(kind) {
   const state = states[kind], retry = $(`retry-${kind}`), meter = $(`${kind}-meter`), steps = $(`${kind}-phase-steps`);
   if (kind === 'ppt' && steps.children.length >= 2) {
@@ -198,12 +234,13 @@ async function pollKind(kind) {
     const status = await api(`/api/jobs/${jobId}`);
     if (taskEpoch !== epoch || sequence !== sequences[kind] || activeTask?.jobs[kind] !== jobId) return;
     if (status.request) {
-      const fields = kind === 'ppt' ? ['source','template_id','slide_count','execution_mode'] : ['source','template_id','video_duration_sec','video_aspect_ratio','video_voice','video_narration','video_subtitles'];
+      const fields = kind === 'ppt' ? ['source','template_id','slide_count','execution_mode'] : ['source','template_id','video_duration_sec','video_aspect_ratio','video_voice','video_narration','video_subtitles','video_execution_mode','video_visual_mode'];
       for (const key of fields) if (Object.hasOwn(status.request, key)) activeTask.input[key] = status.request[key];
+      if (kind==='video' && status.request.execution_mode==='claude_cli') activeTask.input.video_execution_mode='claude_cli';
       persistActive(); renderRequestSummary(); controls();
     }
     states[kind] = status; renderTrack(kind); updateAggregate();
-    if (kind === 'ppt' && status.provider && usesClaude(activeTask.input.execution_mode)) {
+    if (status.provider && (kind === 'ppt' ? usesClaude(activeTask.input.execution_mode) : activeTask.input.video_execution_mode==='claude_cli')) {
       await refreshClaude(); // A failed job is historical; only live account state controls retry.
     }
     if (status.status === 'COMPLETED' && !deliveries[kind]) {
@@ -221,7 +258,7 @@ async function pollKind(kind) {
 async function refreshWallet() { const authEpoch = epoch; const data = await api('/api/wallet'); if (authEpoch !== epoch || !authenticated) return; $('wallet').textContent = `可用 ${data.user.credits_available} 点`; }
 function payloadFor(kind, task = activeTask) {
   const input = task.input;
-  return {source:input.source, template_id:input.template_id || 'auto', slide_count:Number(input.slide_count || 0), task_type:kind, execution_mode:kind === 'ppt' ? (input.execution_mode || 'codex_cli') : 'codex_cli', video_duration_sec:Number(input.video_duration_sec || 30), video_aspect_ratio:input.video_aspect_ratio || '16:9', video_voice:input.video_voice || 'melo', video_narration:input.video_narration !== false, video_subtitles:input.video_subtitles !== false, request_id:task.request_ids[kind]};
+  return {source:input.source, template_id:input.template_id || 'auto', slide_count:Number(input.slide_count || 0), task_type:kind, execution_mode:kind === 'ppt' ? (input.execution_mode || 'codex_cli') : (input.video_execution_mode || 'codex_cli'), video_visual_mode:input.video_visual_mode || 'motion', video_duration_sec:Number(input.video_duration_sec || 30), video_aspect_ratio:input.video_aspect_ratio || '16:9', video_voice:input.video_voice || 'melo', video_narration:input.video_narration !== false, video_subtitles:input.video_subtitles !== false, request_id:task.request_ids[kind]};
 }
 async function submitKind(kind) {
   const task = activeTask;
@@ -273,9 +310,14 @@ async function initialize() {
   capabilities = await api('/api/capabilities'); if (initEpoch !== epoch) return;
   const voiceNames = {melo:'默认中文配音',kokoro_female:'Kokoro 中文女声（可选）',kokoro_male:'Kokoro 中文男声（可选）'};
   $('video-voice').replaceChildren();
+  Object.assign(voiceNames,{microsoft_yunxi:'微软云希 · 男声',microsoft_xiaoxiao:'微软晓晓 · 女声'});
   for (const voice of capabilities.delivery_modes.video.voices || ['melo']) {
     if (voiceNames[voice]) $('video-voice').add(new Option(voiceNames[voice], voice));
   }
+  if (capabilities.delivery_modes.video.voices?.includes('microsoft_yunxi') && !$('video-voice').dataset?.chosen) $('video-voice').value='microsoft_yunxi';
+  $('video-claude-option').disabled = !capabilities.delivery_modes.video.planner_providers?.claude_cli;
+  if (capabilities.delivery_modes.video.planner_providers?.claude_cli && !$('video-engine').dataset?.chosen) $('video-engine').value='claude_cli';
+  globalThis.configureVoiceInput?.(capabilities.delivery_modes.voice_input,canGenerate);
   const videoSupported = capabilities.delivery_modes.video.supported === true; $('mode-video').disabled = !videoSupported; $('mode-composite').disabled = !videoSupported;
   if (!videoSupported && mode !== 'ppt') updateMode('ppt'); else updateMode(mode);
   await refreshWallet(); if (initEpoch !== epoch) return; ready = true; controls();
@@ -301,14 +343,16 @@ $('account').onclick = async () => {
 $('brief').onsubmit = async event => {
   event.preventDefault(); if (busy || !authenticated || !ready || !canGenerate) return;
   const requestedMode = mode;
-  const input = {source:$('source').value.trim(), template_id:$('style').value, slide_count:Number($('pages').value), video_duration_sec:Number($('video-duration').value), video_aspect_ratio:$('video-ratio').value, video_voice:$('video-voice').value || 'melo', video_narration:$('video-narration').value !== 'off', video_subtitles:$('video-captions').value !== 'off'};
+  const input = {source:$('source').value.trim(), template_id:$('style').value, slide_count:Number($('pages').value), video_visual_mode:$('video-visual').value || 'motion', video_duration_sec:Number($('video-duration').value), video_aspect_ratio:$('video-ratio').value, video_voice:$('video-voice').value || 'melo', video_narration:$('video-narration').value !== 'off', video_subtitles:$('video-captions').value !== 'off'};
+  if ($('video-engine').value==='claude_cli') input.video_execution_mode='claude_cli';
+  if (mode!=='ppt' && input.video_visual_mode==='live_action' && input.video_execution_mode!=='claude_cli') return notice('实景故事剪辑请先选择 Claude 制作方式。');
   if (usesClaude($('ppt-engine').value)) input.execution_mode = $('ppt-engine').value;
   if (input.source.length < 20) return notice('请至少输入20个字的原文与要求。');
-  if (mode !== 'ppt' && (!Number.isInteger(input.video_duration_sec) || input.video_duration_sec < 6 || input.video_duration_sec > 60)) return notice('视频时长须为 6–60 秒整数。');
+  if (mode !== 'ppt' && (!Number.isInteger(input.video_duration_sec) || input.video_duration_sec < 6 || input.video_duration_sec > (input.video_execution_mode==='claude_cli'?180:60))) return notice('视频时长须为 6–180 秒整数，超过60秒需选择Claude。');
   busy = true; controls(); notice();
   try {
     const signatureInput = {...input};
-    for (const [key,value] of [['video_voice','melo'],['video_narration',true],['video_subtitles',true]]) {
+    for (const [key,value] of [['video_voice','melo'],['video_narration',true],['video_subtitles',true],['video_visual_mode','motion']]) {
       if (signatureInput[key] === value) delete signatureInput[key];
     }
     const signature = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({mode:requestedMode,input:signatureInput}))))).map(b=>b.toString(16).padStart(2,'0')).join('');
@@ -347,5 +391,20 @@ $('source').oninput = () => { $('count').textContent = `${$('source').value.leng
 for (const id of ['style','pages','ppt-engine','video-duration','video-ratio']) $(id).onchange = () => { updateSummary(); controls(); };
 for (let i=1;i<=5;i++) { const b = document.createElement('button'); b.type='button'; b.setAttribute('aria-label',`查看样例第${i}页`); b.setAttribute('aria-pressed',String(i===3)); const img=document.createElement('img'); img.src=`/static/samples/slide_preview_${i}.png`; img.alt=''; b.append(img); b.onclick=()=> { $('gallery-main').src=img.src; $('gallery-main').alt=`已有样例第${i}页`; $('gallery-count').textContent=`${i} / 5`; [...$('gallery-picks').children].forEach(c=>c.setAttribute('aria-pressed',String(c===b))); }; $('gallery-picks').append(b); }
 $('slide').onerror = () => notice('PPT预览图片加载失败，请刷新状态或重新登录。'); $('video-player').onerror = () => notice('视频预览加载失败，请刷新状态或下载文件检查。');
+$('video-voice').onchange=()=>{$('video-voice').dataset.chosen='true';updateVoiceControls();};
+$('video-narration').onchange=updateVoiceControls;
+$('video-player').onplay=()=> $('video-voice-audio').pause();
+$('video-voice-audition').onclick=async()=>{
+  if($('video-voice-audition').disabled)return;
+  const audio=$('video-voice-audio'); $('video-player').pause(); audio.hidden=false;
+  try { await audio.play(); } catch { notice('试听音频暂时无法播放，请稍后再试。'); }
+};
+
 updateMode('ppt');
 initialize().catch(error => { controls(); if (authenticated) { notice(`初始化失败：${error.message} 点击重新连接再试。`); $('account').textContent = '重新连接'; } });
+
+$('video-engine').onchange=()=>{$('video-engine').dataset.chosen='true';updateSummary();controls();};
+
+$('video-claude-check').onclick=refreshClaude;
+
+$('video-visual').onchange=()=>{$('video-visual').dataset.chosen='true';updateSummary();controls();};

@@ -55,7 +55,8 @@ def test_speech_retries_with_bounded_speed_pads_silence_and_muxes_aac(tmp_path):
     assert engine.speeds[0] == 1.0 and engine.speeds[1] > 1.0
     captions = (job_dir / "staging/subtitles.vtt").read_text(encoding="utf-8")
     assert "讲清客户事实" in captions and "收益仍需验证" in captions
-    assert "00:00:00.000 --> 00:00:03.000" not in captions
+    assert "00:00:00.000 --> 00:00:03.000" in captions
+    assert result["scenes"][0]["caption_duration_sec"] == 3
     assert not (job_dir / "staging/.speech-work").exists()
 
     probe = subprocess.run([shutil.which("ffprobe"), "-v", "error", "-show_streams",

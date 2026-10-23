@@ -51,10 +51,24 @@
 </div>
 <textarea id="source" required minlength="20" maxlength="100000" placeholder="粘贴内容，并说明讲给谁听、希望传达什么。缺失的数据请标注待补充。">
 </textarea>
+<div class="voice-input">
+<button type="button" id="record-voice" disabled>录一段语音</button>
+<label for="voice-file" class="text-link">或上传录音</label>
+<input id="voice-file" type="file" accept="audio/*" disabled>
+<p id="voice-input-status" class="note" role="status">语音先转成文字，核对后再开始创作。</p>
+</div>
 <div class="field-meta">
 <span>原文将用于真实生成</span>
 <output id="count">0 字</output>
 </div>
+<section id="video-audio-options" class="voice-options" hidden aria-labelledby="video-audio-heading">
+<h3 id="video-audio-heading">配音</h3>
+<div class="config-row"><label for="video-narration">是否配音</label><select id="video-narration"><option value="on">开启中文配音</option><option value="off">关闭配音 · 静音视频</option></select></div>
+<div class="config-row"><label for="video-voice">配音音色</label><select id="video-voice"><option value="melo">默认中文配音</option></select></div>
+<button type="button" id="video-voice-audition" class="text-link" disabled>试听所选音色</button>
+<audio id="video-voice-audio" controls preload="none" hidden aria-label="配音音色试听"></audio>
+<p id="video-voice-help" class="note" role="status">选择音色后可先试听；此设置用于下一次生成，不修改已有成片。</p>
+</section>
 <details class="creation-options">
 <summary>风格与输出设置 <span id="config-summary">自动匹配 · 自动页数</span>
 </summary>
@@ -89,6 +103,9 @@
 </div>
 </div>
 <div id="video-options" hidden>
+<div class="config-row"><label for="video-engine">视频制作方式</label><select id="video-engine"><option value="codex_cli">Codex · 图文动画</option><option id="video-claude-option" value="claude_cli" disabled>Claude · 内容、口播与镜头制作</option></select></div>
+<div class="config-row"><label for="video-visual">画面方式</label><select id="video-visual"><option value="motion">解释动画</option><option id="video-live-option" value="live_action" disabled>实景故事剪辑 · Claude</option></select></div>
+<p id="video-claude-status" role="status" hidden></p><button type="button" id="video-claude-check" hidden>检查 Claude 账号状态</button>
 <div class="config-row">
 <label for="video-duration">视频时长</label>
 <select id="video-duration">
@@ -97,6 +114,8 @@
 <option value="30" selected>30 秒</option>
 <option value="45">45 秒</option>
 <option value="60">60 秒</option>
+<option value="120">2 分钟 · Claude</option>
+<option value="180">3 分钟 · Claude</option>
 </select>
 </div>
 <div class="config-row">
@@ -106,11 +125,6 @@
 <option value="9:16">9:16 竖屏</option>
 </select>
 </div>
-<div class="config-row">
-<label for="video-voice">配音音色</label>
-<select id="video-voice"><option value="melo">默认中文配音</option></select>
-</div>
-<div class="config-row"><label for="video-narration">中文配音</label><select id="video-narration"><option value="on">开启</option><option value="off">静音视频</option></select></div>
 <div class="config-row"><label for="video-captions">画面字幕</label><select id="video-captions"><option value="on">烧录字幕</option><option value="off">仅提供字幕文件</option></select></div>
 <p class="note">横竖屏分别排版。可选音色仅在服务器配置后显示；配音失败不会以静音替代。文件验收后可预览，专有名词读音仍需审听。</p>
 </div>
@@ -176,7 +190,7 @@
 </article>
 <article id="video-track" class="track" hidden>
 <h3>视频</h3>
-<ol id="video-phase-steps" class="phase-steps" aria-label="视频生成阶段"><li>整理内容</li><li>生成视频</li><li>检查文件</li><li>交付审阅</li></ol>
+<ol id="video-phase-steps" class="phase-steps" aria-label="视频生成阶段"><li>内容与口播</li><li>分镜与动画</li><li>检查文件</li><li>交付审阅</li></ol>
 <p id="video-progress" aria-live="polite">
 </p>
 <progress id="video-meter" max="100" aria-label="服务器报告的视频进度">
@@ -225,7 +239,7 @@
 </video>
 </div>
 <div class="exports">
-<a id="video-download" class="secondary" download>下载 MP4 ↓</a>
+<a id="video-download" class="secondary" download>下载 MP4 ↓</a><div id="video-writing-downloads" hidden><a id="video-manuscript" download>下载内容与逻辑稿</a> · <a id="video-narration-script" download>下载口播稿</a> · <a id="video-storyboard" download>下载分镜</a><img id="video-storyboard-preview" alt="本次视频分镜预览" style="width:100%;margin-top:16px"></div>
 </div>
 <p class="note">文件检查通过；请试听中文配音，核对专有名词及内容。</p>
 </div>
@@ -258,7 +272,8 @@
 <div id="history-list">
 </div>
 </dialog>
-<script type="module" src="/static/studio.js?v=admin-20261019">
+<script src="/static/voice-input.js?v=voice-story-20261022"></script>
+<script type="module" src="/static/studio.js?v=voice-options-20261022">
 </script>
 </body>
 </html>

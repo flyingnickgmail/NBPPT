@@ -409,12 +409,12 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             media_type="text/event-stream",
         )
 
-    if req.english_spec.get("generation_contract") == "skill-video-v1":
+    if req.english_spec.get("generation_contract") in ("skill-video-v1", "story-video-v2"):
         if req.task_type != "video" or not req.job_id.startswith("video_"):
             raise HTTPException(422, "Video contract requires a video job")
         from worker.video_generation import generate_video_stream
         return StreamingResponse(
-            generate_video_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE),
+            generate_video_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE, CLAUDE_BIN),
             media_type="text/event-stream",
         )
 

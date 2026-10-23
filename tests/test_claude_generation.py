@@ -147,10 +147,15 @@ def test_claude_retry_preserves_provider_owner_source_and_refunds(manager, enabl
     asyncio.run(run())
 
 
-def test_video_cannot_silently_substitute_claude_with_codex(manager, enabled):
+def test_claude_video_obeys_live_gate_without_codex_fallback(manager, enabled, monkeypatch):
     async def run():
-        with pytest.raises(ValueError, match='视频尚未开放 Claude'):
-            await PresentationJobs(manager).create({'user_id':'a','api_key':KEY_A,'scope':'generate'}, 'test','auto',0,'claude-video-01',task_type='video',execution_mode='claude_cli')
+        jobs=PresentationJobs(manager)
+        async def unavailable(*_):
+            from gateway.ppt_contract import ProviderUnavailable
+            raise ProviderUnavailable('blocked','account blocked')
+        monkeypatch.setattr(jobs,'require_claude_ready',unavailable)
+        with pytest.raises(ValueError, match='account blocked'):
+            await jobs.create({'user_id':'a','api_key':KEY_A,'scope':'generate'}, 'test','auto',0,'claude-video-01',task_type='video',execution_mode='claude_cli')
         assert balance(manager) == (2000, 0)
     asyncio.run(run())
 
@@ -307,12 +312,14 @@ def test_worker_rate_limit_refunds_once_even_if_failure_annotation_fails(manager
             async def __aexit__(self,*_):pass
             def stream(self,*_,**kw):return Stream()
         monkeypatch.setattr(mcp_server.httpx,'AsyncClient',Client)
-        original_get=manager.get_job
-        async def fail_annotation(*_):raise RuntimeError('annotation lookup failed')
-        monkeypatch.setattr(manager,'get_job',fail_annotation)
-        with pytest.raises(RuntimeError,match='annotation lookup'):
+        original_save=manager.save_compiled_spec
+        async def fail_annotation(job,spec):
+            if '_provider_failure' in spec: raise RuntimeError('annotation save failed')
+            await original_save(job,spec)
+        monkeypatch.setattr(manager,'save_compiled_spec',fail_annotation)
+        with pytest.raises(RuntimeError,match='annotation save'):
             await jobs.execute(job,{'source':'原文','template_id':'auto','slide_count':2,'execution_mode':'claude_cli','account_owner_user_id':'a'})
-        monkeypatch.setattr(manager,'get_job',original_get)
+        monkeypatch.setattr(manager,'save_compiled_spec',original_save)
         assert balance(manager)==(2000,0)
         await manager.cancel_refund(job,'duplicate cleanup')
         with sqlite3.connect(manager.db_path) as db:

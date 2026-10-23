@@ -87,3 +87,7 @@ git clone --depth 1 https://github.com/GordenSun/GordenPPTSkill.git worker/exter
 ```
 
 打开浏览器访问 `http://127.0.0.1:8000` 即可使用。
+
+## 内容优先的视频制作（本地开发版）
+
+新增录音/上传、离线转写、确认文字、Claude 内容与口播、微软自然配音测时、Claude 分镜、受审实景剪辑或横竖屏动画及严格交付检查。网页选择「视频」或「PPT＋视频」即可设置配音开关、音色和同文试听；生成沿用现有网页和 MCP `create_video(execution_mode="claude_cli")`，需当前密钥获准使用 Claude。实景素材与微软配音需显式配置，服务器尚未启用的能力不会自动开放。配置、能力边界及复现实验见 [视频制作说明](docs/VIDEO_AUTHORING.md)。本节不代表已部署到生产环境。

@@ -20,6 +20,7 @@ workspace/data/runtime_settings.json
 workspace/jobs/
 workspace/cdn_storage/
 workspace/acceptance-*/
+workspace/live-film-media/
 
 # Third-party heavy PPT template repositories (cloned on demand)
 worker/external_ppt_skills/
