@@ -43,6 +43,7 @@ from gateway.template_registry import (
     match_template_for_prompt,
 )
 from gateway.mcp_server import PresentationJobs, build_mcp
+from gateway.reports import router as report_router, workspace as report_workspace
 
 @asynccontextmanager
 async def lifespan(app):
@@ -56,6 +57,7 @@ async def lifespan(app):
                 yield
             finally:
                 await mcp_jobs.close()
+                await report_workspace.shutdown()
 
 
 app = FastAPI(
@@ -71,6 +73,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(report_router)
+
 billing = BillingManager()
 mcp_jobs = PresentationJobs(billing)
 mcp_app = build_mcp(mcp_jobs)
@@ -83,21 +87,38 @@ JOBS_ROOT.mkdir(parents=True, exist_ok=True)
 async def access_control(request: Request, call_next):
     path = request.url.path
     admin_page = path in ('/admin','/static/admin.html')
-    protected = admin_page or path.startswith(("/api/", "/artifacts/")) or path == "/mcp" or path.startswith("/mcp/")
+    report_page = path in ('/reports', '/reports/') or path.startswith('/reports/')
+    report_api = path.startswith('/api/reports/')
+    protected = report_page or admin_page or path.startswith(("/api/", "/artifacts/")) or path == "/mcp" or path.startswith("/mcp/")
     try:
         if protected and not (path == "/api/session" and request.method == "POST"):
             request.state.principal = await authenticate_request(billing, request)
             if admin_page or path.startswith(("/api/admin/", "/api/settings/", "/api/wallet/keys/")) or path in ("/api/health/details", "/api/wallet/topup", "/api/wallet/keys"):
                 if request.state.principal["tier"] != "admin":
                     raise HTTPException(403, "Administrator required")
+        if report_api and request.method == 'POST':
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 10_000_000:
+                    raise HTTPException(413, '报告输入过大，请精简材料或缩小图片。')
+            request._body = bytes(body)
         response = await call_next(request)
     except HTTPException as exc:
-        if admin_page and exc.status_code==401:
+        if path in ('/reports', '/reports/') and exc.status_code == 401:
+            response=RedirectResponse('/?next=reports',status_code=303)
+        elif admin_page and exc.status_code==401:
             response=RedirectResponse('/?next=admin',status_code=303)
         elif admin_page:
             response=HTMLResponse('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>需要管理员权限</title><h1>需要管理员权限</h1><p>当前密钥没有管理权限，请返回工作台，使用管理员密钥登录。</p><a href="/">返回工作台</a></html>',status_code=exc.status_code)
         else:
             response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    except ValueError:
+        if not report_api:
+            raise
+        response=JSONResponse({'detail':'报告未通过材料、图表或版本校验，请核对后重试。'},status_code=422)
+    if report_api or report_page:
+        response.headers['Content-Security-Policy']="default-src 'self' blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     if protected:

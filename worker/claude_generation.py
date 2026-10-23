@@ -112,6 +112,11 @@ async def stop_cli(proc, *, force=False):
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        # SIGKILL already covered the whole process group. Await reaping before
+        # cleanup; a second signal during that window can fail on macOS.
+        proc._nbppt_stopped = True
+        await asyncio.shield(proc.wait())
+        return
     await stop_process(proc)
     if proc and hasattr(proc, "pid"):
         # Stop orphaned shell children even if the CLI itself already exited.

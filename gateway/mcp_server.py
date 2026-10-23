@@ -379,6 +379,9 @@ def build_mcp(jobs):
         """完成后再次验证文件摘要，返回PPTX、HTML和逐页PNG的下载路径及摘要。"""
         return await jobs.artifacts(principal(ctx), job_id)
 
+    from gateway.reports import register_report_tools
+    register_report_tools(server, principal)
+
     origin = os.getenv('NBPPT_PUBLIC_ORIGIN', 'http://127.0.0.1:8000')
     parsed = urlparse(origin)
     security = TransportSecuritySettings(enable_dns_rebinding_protection=True,

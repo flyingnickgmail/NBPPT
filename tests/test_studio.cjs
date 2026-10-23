@@ -6,6 +6,7 @@ const {webcrypto} = require('node:crypto');
 
 function harness(fetch, crypto = webcrypto) {
   const nodes = new Map(), storage = new Map(), timers = new Set();
+  const location={origin:'http://test',assign(url){this.lastURL=url;},replace(url){this.lastURL=url;}};
   function element(tag = '') {
     return {
       tagName:String(tag).toUpperCase(), hidden:false, disabled:false, children:[], value:'', textContent:'', open:false,
@@ -28,7 +29,7 @@ function harness(fetch, crypto = webcrypto) {
     document:{getElementById:get, createElement:tag=>element(tag)},
     sessionStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,String(v)),removeItem:k=>storage.delete(k)},
     fetch, URL, Option:class { constructor(text,value){ this.text=text; this.value=value; } }, crypto, TextEncoder, Uint8Array,
-    location:{origin:'http://test'}, setTimeout:fn=>{timers.add(fn);return fn;}, clearTimeout:fn=>timers.delete(fn)
+    location, setTimeout:fn=>{timers.add(fn);return fn;}, clearTimeout:fn=>timers.delete(fn)
   });
   let source = fs.readFileSync('gateway/static/studio.js','utf8');
   source = source.slice(0, source.lastIndexOf("updateMode('ppt');"));
@@ -43,7 +44,7 @@ function harness(fetch, crypto = webcrypto) {
       },
       get(){return {activeTask,authenticated,ready,mode,states:{ppt:states.ppt,video:states.video},deliveries:{ppt:deliveries.ppt,video:deliveries.video}}}
     };`, ctx);
-  return {api:ctx.testApi, get, timers, storage};
+  return {api:ctx.testApi, get, timers, storage, location};
 }
 
 const response = (body,status=200) => ({ok:status<400,status,json:async()=>body});
@@ -419,4 +420,21 @@ test('selected female voice and narration switch reach the real job request',asy
 test('voice choices are outside collapsed advanced settings and generic samples exist',()=>{
   const html=fs.readFileSync('gateway/static/index.html','utf8');assert.ok(html.indexOf('id="video-audio-options"')<html.indexOf('<details class="creation-options">'));
   for(const voice of ['microsoft_yunxi','microsoft_xiaoxiao'])assert.ok(fs.statSync(`gateway/static/voice-samples/${voice}.mp3`).size>1024);
+});
+
+test('report mode carries the current source to a private server draft',async()=>{
+  const requests=[];
+  const h=harness(async(path,options)=>{requests.push({path,body:JSON.parse(options.body)});return response({url:'/reports?draft=0123456789abcdef0123456789abcdef'});});
+  h.api.set();const fullSource='\n  '+sourceText+'\n';h.get('source').value=fullSource;
+  await h.get('mode-report').onclick();
+  assert.equal(requests.length,1);assert.equal(requests[0].path,'/api/reports/draft');
+  assert.equal(requests[0].body.content,fullSource);assert.equal(requests[0].body.mode,'ai');
+  assert.equal(h.location.lastURL,'/reports?draft=0123456789abcdef0123456789abcdef');
+  assert.ok(!JSON.stringify([...h.storage.values()]).includes(sourceText));
+});
+
+test('report mode respects pending submit and does not turn a read key into generation',async()=>{
+  let calls=0;const h=harness(async()=>{calls++;return response({});});h.get('source').value=sourceText;
+  h.api.set({busy:true});await h.get('mode-report').onclick();assert.equal(calls,0);assert.equal(h.location.lastURL,undefined);
+  h.api.set({canGenerate:false});await h.get('mode-report').onclick();assert.equal(calls,0);assert.equal(h.location.lastURL,'/reports');
 });

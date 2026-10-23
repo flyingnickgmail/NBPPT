@@ -30,3 +30,8 @@ worker/external_ppt_skills/
 .idea/
 .vscode/
 *.log
+
+# Private report runtime and release evidence
+workspace/reports/
+workspace/data/reports/
+workspace/report-release/

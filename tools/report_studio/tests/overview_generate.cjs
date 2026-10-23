@@ -1,0 +1,40 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../static/overview_generate.js'),'utf8');
+function context(fetch,platform=false){
+  const memory=new Map(),c={window:{ReportStudioConfig:platform?{platform:true,apiBase:'/api/reports'}:{}},crypto:require('node:crypto').webcrypto,TextEncoder,fetch,setTimeout:fn=>fn(),sessionStorage:{getItem:k=>memory.get(k)||null,setItem:(k,v)=>{assert(!v.includes('报告甲'),'报告正文不能进入浏览器存储');memory.set(k,v);},removeItem:k=>memory.delete(k)}};
+  vm.runInNewContext(source,c);return c.window.ReportOverviewGenerate;
+}
+const response=body=>({ok:true,json:async()=>body});
+(async()=>{
+  let posts=0,completed=0;
+  let api=context(async(url,options)=>{if(options?.body){posts++;assert.equal(JSON.parse(options.body).overview,null);return response({id:'one'});}return response({id:'one',state:'completed',message:'完成'});});
+  const data={report:{title:'报告甲'},overview:{old:true}};
+  const options={key:'test',status:()=>{},complete:()=>completed++};
+  await Promise.all([api.run(data,options),api.run(data,options)]);
+  assert.equal(posts,1);assert.equal(completed,1);assert.equal(data.overview.old,true);
+  posts=0;let getCalls=0;
+  api=context(async(url,options)=>{if(options?.body){posts++;return response({id:'resume'});}if(++getCalls===1)throw Error('网络中断');return response({id:'resume',state:'completed',message:'完成'});});
+  await assert.rejects(api.run(data,options),/网络中断/);
+  await api.run(data,options);assert.equal(posts,1,'网络恢复应接回原任务');
+  posts=0;let resultAttempts=0;
+  api=context(async(url,options)=>{if(options?.body){posts++;return response({id:'result-resume'});}return response({id:'result-resume',state:'completed',message:'完成'});});
+  const resultOptions={...options,complete:()=>{if(++resultAttempts===1)throw Error('结果读取中断');}};
+  await assert.rejects(api.run(data,resultOptions),/结果读取中断/);
+  await api.run(data,resultOptions);assert.equal(posts,1,'结果读取中断不应重复生成');
+  posts=0;
+  api=context(async(url,options)=>{if(options?.body){posts++;return response({id:'new'+posts});}throw Error('网络中断');});
+  await assert.rejects(api.run(data,options));
+  await assert.rejects(api.run({report:{title:'报告乙'}},options));
+  assert.equal(posts,2,'不同报告不可接回旧任务');
+  let attempts=0;
+  api=context(async(url,options)=>{if(options?.body){attempts++;return response({id:'missing'});}return {ok:false,status:404,json:async()=>({detail:'任务不存在'})};});
+  await assert.rejects(api.run(data,options),/任务不存在/);await assert.rejects(api.run(data,options));assert.equal(attempts,2);
+  const ids=[];
+  api=context(async(url,options)=>{ids.push(options.headers['X-Request-ID']);throw Error('受理响应丢失');},true);
+  await assert.rejects(api.run(data,options),/受理响应丢失/);
+  await assert.rejects(api.run(data,options),/受理响应丢失/);
+  assert.ok(ids[0]);assert.equal(ids[0],ids[1],'受理响应丢失后须复用同一积分请求编号');
+  await assert.rejects(api.run({report:{title:'报告乙'}},options));
+  assert.notEqual(ids[0],ids[2],'不同材料须使用新的积分请求编号');
+  console.log('Overview UI: duplicate suppression, resumable network failure, report binding, missing-task recovery passed');
+})().catch(e=>{console.error(e);process.exit(1);});

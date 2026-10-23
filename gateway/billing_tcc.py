@@ -467,10 +467,10 @@ class BillingManager:
             )
             await db.commit()
 
-    async def confirm_settle(self, job_id: str, actual_cost_usd: float, cdn_urls: Dict[str, Any]) -> Dict[str, Any]:
+    async def confirm_settle(self, job_id: str, actual_cost_usd: float | None, cdn_urls: Dict[str, Any]) -> Dict[str, Any]:
         """Phase 2 (Confirm): Dynamically settle credits based on actual_cost_usd and refund unused frozen difference."""
         await self.initialize()
-        if not math.isfinite(actual_cost_usd) or actual_cost_usd < 0:
+        if actual_cost_usd is not None and (not math.isfinite(actual_cost_usd) or actual_cost_usd < 0):
             raise ValueError("Invalid cost")
         # Validate large files off the event loop and before taking the write lock.
         async with aiosqlite.connect(self.db_path) as preflight:
@@ -503,7 +503,17 @@ class BillingManager:
 
             frozen = int(job["credits_frozen"])
             # Dynamic formula: min(frozen, max(int(frozen * 0.7), int(actual_cost_usd * 300)))
-            dynamic_credits = min(frozen, max(int(frozen * 0.7), int(round(actual_cost_usd * 300))))
+            if job['task_type'] in ('report', 'report_share'):
+                from gateway.report_contract import PRICES
+                if frozen != PRICES[job['task_type']] or actual_cost_usd is not None:
+                    raise ValueError('Report settlement requires its admitted fixed service price')
+                dynamic_credits = frozen
+                charge_note = f'报告服务结算：实扣 {dynamic_credits} 点；供应商实际费用未知'
+            else:
+                if actual_cost_usd is None:
+                    raise ValueError('Media settlement requires a cost estimate')
+                dynamic_credits = min(frozen, max(int(frozen * 0.7), int(round(actual_cost_usd * 300))))
+                charge_note = f'TCC Confirm: 实扣 {dynamic_credits} 点 (估算成本 ${actual_cost_usd:.4f})'
             refund_diff = frozen - dynamic_credits
 
             async with db.execute("SELECT credits_available, credits_frozen FROM users WHERE id = ?", (job["user_id"],)) as cur:
@@ -535,7 +545,7 @@ class BillingManager:
                     job_id,
                     refund_diff,
                     new_avail,
-                    f"TCC Confirm: 实扣 {dynamic_credits} 点 (估算成本 ${actual_cost_usd:.4f})，退回差额 +{refund_diff} 点",
+                    charge_note + f'，退回差额 +{refund_diff} 点',
                     ts,
                 ),
             )
@@ -590,7 +600,7 @@ class BillingManager:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                "SELECT * FROM media_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, max(1, min(limit, 100)))
+                "SELECT * FROM media_jobs WHERE user_id = ? AND task_type IN ('ppt','video','composite') ORDER BY created_at DESC LIMIT ?", (user_id, max(1, min(limit, 100)))
             ) as cur:
                 rows = await cur.fetchall()
             result = []

@@ -1,0 +1,41 @@
+.analytical-scatter{--scatter-grid:color-mix(in srgb,var(--line) 70%,transparent);color:var(--ink)}
+.scatter-definition{margin:0 0 14px;color:var(--muted);font-size:11px;line-height:1.65;letter-spacing:.015em}
+.scatter-plot-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;padding-bottom:4px}
+.analytical-scatter-svg{display:block;width:100%;height:auto;min-width:640px;min-height:360px;overflow:visible;font-variant-numeric:tabular-nums}
+.scatter-field{fill:color-mix(in srgb,var(--surface) 84%,var(--soft))}
+.scatter-zone{pointer-events:none}.scatter-zone.zone-a{fill:color-mix(in srgb,var(--soft) 22%,transparent)}.scatter-zone.zone-b{fill:color-mix(in srgb,var(--line) 13%,transparent)}.scatter-zone.zone-c{fill:color-mix(in srgb,var(--line) 8%,transparent)}.scatter-zone.zone-d{fill:color-mix(in srgb,var(--soft) 14%,transparent)}
+.analytical-scatter .scatter-grid{stroke:var(--scatter-grid);stroke-width:1;vector-effect:non-scaling-stroke}
+.analytical-scatter .scatter-reference{stroke:var(--muted);stroke-width:1.15;stroke-dasharray:5 6;vector-effect:non-scaling-stroke;opacity:.76}
+.scatter-tick,.scatter-axis-label,.scatter-reference-label,.scatter-region-label,.scatter-direct-value{fill:var(--muted)}
+.scatter-tick{font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
+.scatter-axis-label{font-size:12px;letter-spacing:.025em}
+.scatter-reference-label{font:10px ui-monospace,SFMono-Regular,Consolas,monospace;paint-order:stroke;stroke:var(--surface);stroke-width:4px;stroke-linejoin:round}
+.scatter-region-label{font-size:10px;font-weight:600;letter-spacing:.05em;opacity:.78;paint-order:stroke;stroke:var(--surface);stroke-width:4px;stroke-linejoin:round}
+.scatter-region-key{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 18px;margin:7px 0 13px;color:var(--muted);font-size:10px;line-height:1.5}
+.scatter-region-key-item{display:flex;align-items:baseline;gap:7px}.scatter-region-key-item b{min-width:20px;color:var(--ink);font:600 10px ui-monospace,SFMono-Regular,Consolas,monospace}
+.scatter-leader{stroke:var(--muted);stroke-width:.8;vector-effect:non-scaling-stroke;opacity:.55}
+.scatter-point{cursor:pointer;outline:none}
+.scatter-hit{fill:transparent;pointer-events:all}
+.scatter-mark{fill:var(--ink);stroke:var(--surface);stroke-width:3;vector-effect:non-scaling-stroke;transition:r .16s ease,stroke-width .16s ease}
+.scatter-point.is-emphasis .scatter-mark{fill:var(--accent)}
+.scatter-point:hover .scatter-mark,.scatter-point:focus .scatter-mark{r:9;stroke:var(--accent);stroke-width:4}
+.scatter-direct-label{pointer-events:none;font-size:12px;paint-order:stroke;stroke:var(--surface);stroke-width:5px;stroke-linejoin:round}
+.scatter-direct-name{fill:var(--ink);font-weight:650}
+.scatter-direct-label.is-emphasis .scatter-direct-name{fill:var(--accent)}
+.scatter-direct-value{font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
+.scatter-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}
+.scatter-detail{display:flex;align-items:baseline;justify-content:space-between;gap:12px;min-height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:2px;background:transparent;color:var(--ink);text-align:left}
+.scatter-detail strong{font-size:12px;font-weight:650}
+.scatter-detail span{color:var(--muted);font:10px ui-monospace,SFMono-Regular,Consolas,monospace;text-align:right}
+.scatter-detail.is-emphasis{border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+.scatter-detail:hover,.scatter-detail:focus-visible{border-color:var(--accent);background:var(--soft);outline:none}
+@media(max-width:600px){
+  .scatter-definition{font-size:10px}.analytical-scatter-svg{min-height:0}.scatter-region-key{grid-template-columns:1fr}.scatter-details{grid-template-columns:1fr}.scatter-detail{min-height:48px}
+  .scatter-tick{font-size:15px}.scatter-axis-label{font-size:15px}.scatter-reference-label,.scatter-region-label{font-size:12px}.scatter-direct-label{font-size:15px}.scatter-direct-value{font-size:13px}
+}
+@media print{.scatter-details{grid-template-columns:repeat(2,minmax(0,1fr))}.scatter-detail{break-inside:avoid}.scatter-point:hover .scatter-mark,.scatter-point:focus .scatter-mark{r:7;stroke:var(--surface);stroke-width:3}}
+@media(prefers-reduced-motion:reduce){.scatter-mark{transition:none}}
+/* Reading hierarchy: observations lead, axes support. */
+.analytical-scatter .scatter-direct-label{font-size:15px}
+.analytical-scatter .scatter-direct-value{font-size:12px}
+.analytical-scatter .scatter-tick{font-size:12px}

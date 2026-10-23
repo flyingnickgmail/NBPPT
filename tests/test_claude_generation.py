@@ -374,6 +374,25 @@ def test_rate_limit_stops_orphaned_shell_children_after_cli_exit(tmp_path,enable
     asyncio.run(run())
 
 
+def test_forced_stop_reaps_without_signalling_a_dead_group_again(monkeypatch):
+    calls=[]
+    class Process:
+        pid=987654
+        returncode=None
+        async def wait(self):
+            self.returncode=-9
+            calls.append('reaped')
+    def signal_group(pid,sig):
+        if calls:
+            raise PermissionError('dead group has not been reaped')
+        calls.append(sig)
+    monkeypatch.setattr(claude.os,'killpg',signal_group)
+    proc=Process()
+    asyncio.run(claude.stop_cli(proc,force=True))
+    assert calls==[claude.signal.SIGKILL,'reaped']
+    assert proc._nbppt_stopped and proc.returncode==-9
+
+
 def test_oversized_xml_rejected_before_parsing(tmp_path):
     p=make_native(tmp_path/'draft/presentation.pptx')
     with zipfile.ZipFile(p,'a',compression=zipfile.ZIP_DEFLATED) as z:z.writestr('large.xml','<a>'+('x'* (4*1024*1024))+'</a>')

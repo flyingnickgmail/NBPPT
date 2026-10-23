@@ -305,6 +305,7 @@ async function initialize() {
   }
   userId = session.user_id; authenticated = true; canGenerate = session.can_generate === true; ready = false; $('account').textContent = '退出'; $('admin').hidden = !session.admin;
   if (session.admin && new URL(location.href || location.origin).searchParams.get('next') === 'admin') { location.replace('/admin'); return; }
+  if (new URL(location.href || location.origin).searchParams.get('next') === 'reports') { location.replace('/reports'); return; }
   const templates = await api('/api/templates'); if (initEpoch !== epoch) return; $('style').replaceChildren(new Option('自动匹配','auto'));
   templates.templates.forEach(t => { if (t.id !== 'auto') $('style').add(new Option(t.name, t.id)); });
   capabilities = await api('/api/capabilities'); if (initEpoch !== epoch) return;
@@ -330,6 +331,19 @@ async function initialize() {
 }
 
 for (const name of ['ppt','video','composite']) $(`mode-${name}`).onclick = () => updateMode(name);
+$('mode-report').onclick = async () => {
+  if (busy) return notice('任务正在提交，请等待服务器确认后再切换。');
+  if (!authenticated) { location.replace('/reports'); return; }
+  const source = $('source').value;
+  if (!source.trim() || !canGenerate) { location.assign('/reports'); return; }
+  if (source.length > 60000) return notice('研究报告目前支持最多60,000字，请精简原文后进入。');
+  const ticket=epoch,button = $('mode-report');button.disabled=true;
+  try {
+    const draft = await api('/api/reports/draft', {method:'POST',body:JSON.stringify({content:source,mode:'ai'})});
+    if(ticket===epoch)location.assign(draft.url);
+  } catch(error) {notice(error.message);button.disabled=false;}
+};
+
 $('login-form').onsubmit = async event => {
   event.preventDefault(); $('login-error').textContent = '';
   try { await api('/api/session',{method:'POST',body:JSON.stringify({api_key:$('key').value})}); $('key').value = ''; $('login').close(); await initialize(); }

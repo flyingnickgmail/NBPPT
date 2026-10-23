@@ -1,0 +1,348 @@
+{
+  "version": "1.1",
+  "reviewed_on": "2026-10-19",
+  "recipes": [
+    {
+      "id": "ranked_dot",
+      "question": "谁更大，差距集中在哪里？",
+      "name": "有序点图",
+      "requires": "对象×同单位数值，口径和期间可比",
+      "encoding": "横向共同坐标；直接标注对象与值，重点用铜橙",
+      "style": "长名称在左；轴线轻、点值重；留右侧注释区",
+      "motion": "先坐标后点，最后强调差距",
+      "avoid": "只看排名会丢失绝对差距；部分样本不称全行业排名",
+      "fallback": "少量对象用有序条图",
+      "engine": {
+        "kind": "bar",
+        "note": "当前网页采用有序条形/端点表达"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "qualified_values",
+      "question": "已报告数值、近似值和上下界，分别说明怎样的差异？",
+      "name": "限定值共同尺度点图",
+      "requires": "同单位、同期间且可比的对象；每点保留原始数值、限定符和该数值的短引文",
+      "encoding": "共同轴实点表示报告值、≈表示近似位置、开口尖括号表示单侧界限；不连线不补区间",
+      "style": "对象左、数轴中、数值右；零线与直接标注；只强调关键对象",
+      "motion": "各行依次淡入，保持符号与文字同时可读",
+      "avoid": "上下界不当精确点，近似值不当置信区间，不按阈值作精确排名，不计算伪精确差值",
+      "fallback": "原值证据表",
+      "engine": {
+        "kind": "qualified_dot",
+        "note": "支持 exact/approx/gt/lt/gte/lte；带符号校验、引文下钻、叙事联动和动效"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "paired_change",
+      "question": "哪些门店前后改善，幅度是否一致？",
+      "name": "哑铃图",
+      "requires": "同一对象的两次观测、共同单位，且不是观测与目标混合",
+      "encoding": "两端共享横轴，连线仅表示端点差距",
+      "style": "前期空心、后期铜橙实心，期名与数值靠近端点",
+      "motion": "两组端点依次出现，不演成连续过程",
+      "avoid": "样本更替、指标口径改变不能叫同店改善",
+      "fallback": "前后原值表",
+      "engine": {
+        "kind": "comparison",
+        "note": "snapshot_dumbbell"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "target_gap",
+      "question": "离目标还差多少？",
+      "name": "目标差距图",
+      "requires": "基线与目标分别有证据、方向和单位",
+      "encoding": "实心观察点与目标刻线或空心点并列",
+      "style": "目标使用虚线/空心，不能只靠颜色区分",
+      "motion": "先观察再目标标记",
+      "avoid": "目标不是结果；分母不清不能算完成率",
+      "fallback": "基线/目标双列",
+      "engine": {
+        "kind": "targets",
+        "note": "target_gap_rows；不是完整 bullet 渲染器"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "result_bridge",
+      "question": "利润变化由哪些已披露项目构成？",
+      "name": "增减桥",
+      "requires": "同口径起点、带符号贡献、终点，算术闭合",
+      "encoding": "贡献起止高度接续；终点从零起，单位统一",
+      "style": "石墨起止、铜橙关键项；直接写正负号",
+      "motion": "按贡献项一次揭示后保留全图",
+      "avoid": "会计分解不证明因果；不自动补造其他项让图闭合",
+      "fallback": "两端结果对照，缺贡献则不画桥",
+      "engine": {
+        "kind": "waterfall",
+        "note": "signed_result_bridge"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "shared_trends",
+      "question": "不同市场的变化路径是否分化？",
+      "name": "同尺度小多图",
+      "requires": "多对象、至少三个真实年月观察点、相同单位与定义",
+      "encoding": "每面板相同时间轴和数轴；缺期断线",
+      "style": "统一基准线，面板标题和末值直接标注",
+      "motion": "面板同步出现，焦点联动只改强调",
+      "avoid": "各图独立缩放会假造相同波动；不拼接累计和单月",
+      "fallback": "离散时期比较",
+      "engine": {
+        "kind": "multiseries",
+        "note": "display=line；四条以上选择 small_multiples_trend"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "relationship",
+      "question": "高收入是否也意味着高收益？",
+      "name": "直接标注散点",
+      "requires": "每对象拥有两个实际变量、单位和统计期",
+      "encoding": "横纵位置表达各自变量，零线/中位线明确",
+      "style": "一组焦点铜橙，其他石墨；留标签避让空间",
+      "motion": "点定位后出现注释；点击给原文",
+      "avoid": "两变量不等于因果；未测量的定性评分不可填坐标",
+      "fallback": "双指标表",
+      "engine": {
+        "kind": "scatter",
+        "note": "relationship_scatter；无第三变量面积协议"
+      },
+      "sources": [
+        "EC-H"
+      ]
+    },
+    {
+      "id": "qualitative_compare",
+      "question": "两种方案的作用与边界有何不同？",
+      "name": "并列同维度对照",
+      "requires": "同维度的两对象原文证据，性质明确",
+      "encoding": "各行对齐比较对象，短句呈现差异",
+      "style": "开放行距、轻分隔；不用优劣热度",
+      "motion": "按维度逐项强调",
+      "avoid": "未说明不是不具备；不强造分数",
+      "fallback": "简短对照段落",
+      "engine": {
+        "kind": "contrast",
+        "note": "qualitative_pair"
+      },
+      "sources": [
+        "ORIGINAL"
+      ]
+    },
+    {
+      "id": "membership",
+      "question": "哪些职责有重叠，哪些尚未明确？",
+      "name": "分类归属点阵",
+      "requires": "对象×已命名分类；明确涉及/明确排除/未明确",
+      "encoding": "点的形状区分类别关系；不使用大小权重",
+      "style": "灰色未明确，排除需原文，图例始终可见",
+      "motion": "逐对象突出，不闪烁",
+      "avoid": "空白不代表否定；归属不是成熟度",
+      "fallback": "原文证据表",
+      "engine": {
+        "kind": "membership",
+        "note": "categorical_membership"
+      },
+      "sources": [
+        "ORIGINAL"
+      ]
+    },
+    {
+      "id": "interval_dot",
+      "question": "哪些估计差异仍在不确定区间内？",
+      "name": "区间点图",
+      "requires": "每对象中心值/上下界、区间性质与覆盖水平",
+      "encoding": "点为估计，细横线为区间，参考线为业务基准",
+      "style": "点与线层级分明；样本量和区间含义紧贴副题",
+      "motion": "整体出现后强调重叠区间",
+      "avoid": "极差/预测区间/置信区间不能混称；区间重叠不直接给显著性结论",
+      "fallback": "带上下界的数值表",
+      "engine": {
+        "kind": null,
+        "note": "储备：需增加上下界及区间性质协议"
+      },
+      "sources": [
+        "OP"
+      ]
+    },
+    {
+      "id": "distribution",
+      "question": "平均等待时间掩盖了哪些门店长尾？",
+      "name": "蜂群与箱线组合",
+      "requires": "逐条样本或经核对的分位数，分组与样本量已知",
+      "encoding": "点代表样本，箱体代表四分位，突出中位和长尾",
+      "style": "横轴同尺度，少量异常点直接标注；写清须线定义",
+      "motion": "样本点先出现再加统计摘要",
+      "avoid": "均值列表不能生成箱线；抖动只为避让，不是第二变量",
+      "fallback": "只展示已有统计量",
+      "engine": {
+        "kind": null,
+        "note": "储备：需样本/分位数协议及渲染器"
+      },
+      "sources": [
+        "OP"
+      ]
+    },
+    {
+      "id": "rank_change",
+      "question": "竞争位置发生了什么变化？",
+      "name": "排名变动线",
+      "requires": "多个时期的可比排名、并列规则和完整候选范围",
+      "encoding": "纵轴排名、横轴时期，线只连接同一对象",
+      "style": "重点线铜橙，其余低对比；首尾直接标名",
+      "motion": "按真实时间揭示，每步保留排名",
+      "avoid": "排名变化不等于份额变化；不连续排名不可当连续数值路径",
+      "fallback": "两期排名对照",
+      "engine": {
+        "kind": null,
+        "note": "储备：当前不支持 bump 类型"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "cohort",
+      "question": "不同交付批次的服务留存是否改善？",
+      "name": "队列留存热图",
+      "requires": "同批次分母、同龄观察窗、留存定义；未来窗口缺失",
+      "encoding": "行是批次，列是相对周期，固定0—100色阶",
+      "style": "未到观察期空白且图例解释；可见分母",
+      "motion": "逐批次强调；不为未来窗填色",
+      "avoid": "分母变动会伪造改善，获客月和日历月不可混用",
+      "fallback": "有证据的逐批次表",
+      "engine": {
+        "kind": null,
+        "note": "储备：需队列与删失/缺失标记协议"
+      },
+      "sources": [
+        "OP"
+      ]
+    },
+    {
+      "id": "size_mix",
+      "question": "市场规模与结构如何同时影响机会？",
+      "name": "宽度编码的组成图",
+      "requires": "互斥完整分类、市场总量、各市场内部份额",
+      "encoding": "列宽为规模，列内高度为比例，面积才代表总量贡献",
+      "style": "保留总量与比例两种标签；小块合并须可追溯",
+      "motion": "先宽度再组成，但最终静态标签齐全",
+      "avoid": "面积不便精确比较；只有比例没有总量不能画变宽",
+      "fallback": "等宽100%堆叠或分别列总量",
+      "engine": {
+        "kind": null,
+        "note": "储备：Marimekko，需总量/组成双重协议"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "measured_flow",
+      "question": "同批车辆最终去了哪里？",
+      "name": "实测流向图",
+      "requires": "来源目标状态与对应流量、同一批次、守恒或明确损耗",
+      "encoding": "带宽编码流量；阶段对齐，流量可核算",
+      "style": "少色、直标总量，避免交叉过密",
+      "motion": "按有据的阶段揭示，不画想象的实时流动",
+      "avoid": "不同同比率不能成为流量；无数量用定性对照，分享图不套流程框图",
+      "fallback": "来源目标交叉表",
+      "engine": {
+        "kind": null,
+        "note": "储备：Sankey，当前 mechanism 不编码带宽"
+      },
+      "sources": [
+        "FT-T"
+      ]
+    },
+    {
+      "id": "concentration",
+      "question": "少数门店是否集中了大部分问题？",
+      "name": "帕累托与累计贡献",
+      "requires": "非负同口径数量、完整总体、明确排序和累计分母",
+      "encoding": "降序数量与累计份额分开上下对齐，避免任意双轴",
+      "style": "数量点图＋累计线共享类别；标明全部或样本",
+      "motion": "先数量后累计；累积值可复算",
+      "avoid": "类别交叠或总量不全不能给整体累计份额",
+      "fallback": "有序数量图",
+      "engine": {
+        "kind": null,
+        "note": "储备：需累计变换记录与组合渲染"
+      },
+      "sources": [
+        "ORIGINAL"
+      ]
+    },
+    {
+      "id": "scenario_range",
+      "question": "未来结果的范围来自哪些假设？",
+      "name": "情景区间/扇形图",
+      "requires": "明确情景、未来时期和对应数值；概率带还须分位含义",
+      "encoding": "观测实线、情景虚线；只有真实概率范围才填扇带",
+      "style": "预测起点竖分界；假设与范围直接标注",
+      "motion": "按观察→未来分界→情景显示",
+      "avoid": "多个预测机构不是概率分布，不能涂成置信扇面",
+      "fallback": "各情景原值表",
+      "engine": {
+        "kind": null,
+        "note": "储备：需区间及情景协议"
+      },
+      "sources": [
+        "OP"
+      ]
+    },
+    {
+      "id": "linked_snapshots",
+      "question": "规模和收益是否沿同一方向移动？",
+      "name": "同对象轨迹散点",
+      "requires": "每对象各期都有成对变量且时点可核对",
+      "encoding": "共享两轴，连同一对象的真实时点，标首尾年份",
+      "style": "少量对象；交叉过多改同尺度分面",
+      "motion": "按真实时点揭示，不用曲线插值",
+      "avoid": "两个不同样本横截面不能连成个体轨迹",
+      "fallback": "分别呈现两期散点",
+      "engine": {
+        "kind": null,
+        "note": "储备：需实体×时间二维轨迹协议"
+      },
+      "sources": [
+        "EC-H"
+      ]
+    },
+    {
+      "id": "structure_compare",
+      "question": "设备或规则改变后，什么部位真正起作用？",
+      "name": "注释式结构对照",
+      "requires": "材料给出可命名部位/条件及其作用，不需虚构数值",
+      "encoding": "同位对照、局部放大、剖切；结构改变对应功能解释",
+      "style": "精细线描，铜橙只标改变处，主体和短注一一对应",
+      "motion": "网页分步强调部位；分享图保留完整对照",
+      "avoid": "装饰建筑不是剖面解释；面积不代表测量比例",
+      "fallback": "有据的同维度定性对照",
+      "engine": {
+        "kind": null,
+        "note": "分享图支持 annotated_structure；正文暂无专用渲染器"
+      },
+      "sources": [
+        "FT-AI"
+      ]
+    }
+  ]
+}

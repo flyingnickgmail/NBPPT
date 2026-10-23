@@ -101,3 +101,9 @@ Certbot >=5.4 支持 IP 证书。使用 webroot + shortlived profile 为服务�
 接口为 `GET/POST /api/admin/keys`、`PATCH /api/admin/keys/{key_id}`、`POST /api/admin/keys/{key_id}/credits`（`delta`、`note`）、`POST /api/admin/keys/{key_id}/revoke`、`GET /api/admin/actions`。写请求均需唯一 `request_id`；同请求重发返回原结果，编号被用于不同操作则拒绝。编号与管理记录在同一事务保存，避免网络丢失响应造成重复分配。浏览器中结果未确认时应保留原参数再提交；刷新数据按钮保留待核对的编号，整页重新载入前须先核查操作记录。Cookie（浏览器会话）写请求必须同源；不能使用普通生成密钥管理额度或给自己授权。
 
 运行账号绑定由网关从服务器配置生成，不接受客户端的 `account_owner_user_id`、租户 ID 或授权标记覆盖。任务 ID、账目和产物所有权始终来自真实认证账户；允许 Claude 不会转移或合并账户。关闭权限对新提交与失败重试即时生效，已受理任务继续执行。
+
+## 研究报告与分享图
+
+发布包含 `gateway/reports.py`、`gateway/report_contract.py`、`worker/report_generation.py` 及 `tools/report_studio`。保留 `NBPPT_REQUIRE_ISOLATION=true`；网关通过现有受保护的worker接口提交，worker共用模型并发控制。网关历史位于 `workspace/data/reports`，在现有可写目录内，无需放宽 systemd 的写权限。worker发布目录0750、文件0640，使用现有产物共享组；不要把网关私有历史目录交给worker。
+
+报告/复审60积分、分享图40积分，独立冻结/结算/失败退款，沿用日尝试限制。供应商实际费用未知，保存NULL。原PPT/视频计费、交付校验和历史接口保留；报告历史走独立报告页面。部署前须备份代码提交、数据库与环境/systemd配置，确认无RUNNING任务，执行Mac和Linux全量回归、真实隔离模型调用及主页报告/分享图生成和下载验收。回退代码时保留账本和已保存报告，不覆盖生产数据库。

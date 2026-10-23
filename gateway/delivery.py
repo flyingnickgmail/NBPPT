@@ -23,7 +23,7 @@ class DeliveryError(ValueError):
 
 
 def safe_job_id(job_id: str) -> str:
-    if not re.fullmatch(r"(?:ppt|video|composite)_[a-f0-9]{10}", job_id):
+    if not re.fullmatch(r"(?:ppt|video|composite|report|reportshare)_[a-f0-9]{10}", job_id):
         raise DeliveryError("Invalid job identifier")
     return job_id
 
@@ -51,6 +51,9 @@ class ImageReferences(HTMLParser):
 def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path) -> dict:
     root = root.resolve()
     safe_job_id(job_id)
+    if task_type in ('report', 'report_share'):
+        from gateway.report_contract import inspect_report
+        return inspect_report(job_id, task_type, spec, root)
     if task_type not in ("ppt", "video", "composite"):
         raise DeliveryError("Unsupported task type")
     files = []
@@ -268,6 +271,9 @@ def verify_published(job_id: str, task_type: str, spec: dict, root: pathlib.Path
 def delivery_urls(job_id: str, manifest: dict) -> dict:
     base = f"/artifacts/{job_id}/"
     paths = [f["path"] for f in manifest["files"]]
+    if manifest.get('task_type') in ('report', 'report_share'):
+        return {'report_url': base + 'report.json', 'html_url': base + 'report.html',
+                'image_url': base + 'overview.png' if 'overview.png' in paths else None}
     return {
         "pptx_url": next((base + p for p in paths if p.endswith(".pptx")), None),
         "html_deck_url": next((base + p for p in paths if p.endswith(".html") and p != "footage_credits.html"), None),
