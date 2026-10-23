@@ -20,7 +20,7 @@ from .illustrations import illustration_asset
 from .chart_design import recommend_design
 from .editorial import evidence_catalog
 from .overview import validate_overview
-from .overview_generation import create_overview
+from .overview_generation import create_overview_with_reselection as create_overview
 from .overview_style import VERSION as OVERVIEW_STANDARD_VERSION
 
 ROOT = Path(__file__).resolve().parent

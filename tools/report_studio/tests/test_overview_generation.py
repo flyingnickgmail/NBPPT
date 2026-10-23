@@ -548,3 +548,47 @@ def test_retry_keeps_approved_plan_but_never_reuses_unrelated_image(data,tmp_pat
         for _ in range(20):
             if client.get('/api/overview/'+job).json()['state']=='completed':break
     assert resumed==[(True,False)]
+
+
+@pytest.mark.anyio
+async def test_quality_exhaustion_reselects_once_from_full_report(data,tmp_path,monkeypatch):
+    calls=[]; original=data.model_dump()
+    async def create(value,folder,progress,**kwargs):
+        calls.append((folder,kwargs))
+        assert value.content==data.content and value.report==data.report
+        if len(calls)==1:
+            (folder/'review-1.json').write_text(json.dumps({'approved':False,'issues':['画成界面，关系无法读懂']}))
+            (folder/'plan.json').write_text(json.dumps({'title':'失败的原选题'}))
+            raise generation.OverviewQualityFailure(422,'quality exhausted')
+        assert folder==tmp_path/'reselection'
+        assert kwargs['rejected_design']['title']=='失败的原选题'
+        return value
+    monkeypatch.setattr(generation,'create_overview',create)
+    phases=[]
+    async def progress(state,*args): phases.append(state)
+    result=await generation.create_overview_with_reselection(data,tmp_path,progress)
+    assert result is data and len(calls)==2 and phases==['reselecting']
+    assert data.model_dump()==original
+
+
+@pytest.mark.anyio
+async def test_reselection_never_loops_or_retries_provider_errors(data,tmp_path,monkeypatch):
+    calls=[]
+    async def quality(value,folder,progress,**kwargs):
+        calls.append(folder)
+        (folder/'review-1.json').write_text(json.dumps({'approved':False,'issues':['关系仍不可读']}))
+        (folder/'plan.json').write_text(json.dumps({'title':'未通过的选题'}))
+        raise generation.OverviewQualityFailure(422,'still invalid')
+    async def progress(*args): pass
+    monkeypatch.setattr(generation,'create_overview',quality)
+    with pytest.raises(generation.OverviewQualityFailure):
+        await generation.create_overview_with_reselection(data,tmp_path,progress)
+    assert len(calls)==2
+    calls.clear()
+    async def provider(*args,**kwargs):
+        calls.append(1)
+        raise HTTPException(502,'provider unavailable')
+    monkeypatch.setattr(generation,'create_overview',provider)
+    with pytest.raises(HTTPException) as failure:
+        await generation.create_overview_with_reselection(data,tmp_path,progress)
+    assert failure.value.status_code==502 and len(calls)==1
