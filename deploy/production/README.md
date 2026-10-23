@@ -65,7 +65,7 @@ runuser -u nbppt-worker -- env NBPPT_CLAUDE_HOME="$NBPPT_CLAUDE_HOME" NBPPT_ACCO
 
 回退：两个环境文件设 `NBPPT_CLAUDE_ENABLED=false` 并在无运行中任务时重启 worker/gateway，原 Codex 默认路径保持可用。保留失败任务及账目，不回滚数据库。
 
-Certbot >=5.4 支持 IP 证书。使用 webroot + shortlived profile 为服务器 IP 签发；80端口只用于 ACME 与跳转，443代理127.0.0.1:8000。安装 nginx.conf 时按实际 IP 和证书路径调整。
+Certbot >=5.4 支持 IP 证书。使用 webroot + shortlived profile 为服务器 IP 签发；80端口只用于 ACME 与跳转，443代理127.0.0.1:8000。安装 nginx.conf 时按实际 IP 和证书路径调整。`/api/reports/` 请求上限为 10 MB，以容纳报告内嵌分享图；其他入口仍为 1 MB。部署报告功能时须同步此配置，并从公网验证含真实图片的导出、预览及复核请求。
 安装续期 service/timer，`systemctl enable --now nbppt-cert-renew.timer`；执行 `certbot renew --dry-run`，检查证书和 timer 的下次运行时间。IP 证书有效期很短，需持续监测 timer 失败和到期时间。
 
 从经测试的合并提交 `git pull --ff-only origin main`，安装 requirements，校验文件权限，`systemctl daemon-reload`，重启 worker、gateway，检查健康状态后 `nginx -t` 并 reload。防火墙只保留 SSH、已有无关服务及80/443；移除8000/8001公网规则，两服务仅绑定回环。不要暴露 worker。
