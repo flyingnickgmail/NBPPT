@@ -520,3 +520,33 @@ def test_desktop_adapter_rejects_private_report_files(tmp_path,monkeypatch):
             'files':[{'path':'request.json','size':10,'sha256':'0'*64}]}
     with pytest.raises(ValueError,match='Unexpected artifact path'):
         run(adapter.download_artifacts({'download_dir':str(tmp_path),'url':'https://example.test/mcp','api_key':'test'},result))
+
+
+@pytest.mark.parametrize('prior_owner',['alice','bob'])
+def test_retry_uses_quality_feedback_only_for_same_owner_and_report(setup,sample,monkeypatch,prior_owner):
+    captured=[]
+    async def generated(data,kind,folder,progress,*,rejected_design=None):
+        captured.append(rejected_design)
+        data.mode='ai'
+        image=folder/'test.png';Image.new('RGB',(640,800),'white').save(image)
+        return attach(data,image,'测试反馈隔离与图像版本绑定，不代表业务结果。')
+    configure_worker(setup,sample,monkeypatch,model=generated)
+    data=ExportInput.model_validate(sample);data.overview=None
+    raw=data.model_dump_json(indent=2).encode()
+    previous=setup.create(prior_owner,'失败图','overview')
+    previous.update(state='failed',billing_job_id='reportshare_aaaaa11111',request_hash=hashlib.sha256(b'overview:'+raw).hexdigest())
+    setup.write(setup.folder(previous['id'])/'status.json',previous)
+    failed=main.billing.jobs_root/'reportshare_aaaaa11111';failed.mkdir(parents=True)
+    (failed/'review-1.json').write_text(json.dumps({'approved':False,'issues':['旧表达没有图形信息增量']}))
+    (failed/'plan.json').write_text(json.dumps({'title':'旧失败选题'}))
+    async def check():
+        async with client() as c:
+            response=await c.post('/api/reports/overview',json=sample)
+            assert response.status_code==202
+            await asyncio.gather(*list(setup.tasks.values()))
+            state=(await c.get(response.json()['status_url'])).json()
+            assert state['state']=='completed',state
+            assert wallet_state()==(1960,0)
+            if prior_owner=='alice':assert captured[0]['title']=='旧失败选题'
+            else:assert captured==[None]
+    run(check())

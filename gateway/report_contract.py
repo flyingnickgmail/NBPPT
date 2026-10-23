@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tools.report_studio.models import ExportInput, GenerateInput
 from tools.report_studio.app import export_html
+from tools.report_studio.overview_feedback import read_quality_feedback
 
 PRICES = {'report': 60, 'report_share': 40}
 

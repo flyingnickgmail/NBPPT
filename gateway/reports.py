@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from gateway.config import BASE_DIR, get_runtime_settings
-from gateway.report_contract import PRICES, parse_input
+from gateway.report_contract import PRICES, parse_input, read_quality_feedback
 from gateway.delivery import verify_published, delivery_urls
 from tools.report_studio.app import STATIC, export_html, local_report
 from tools.report_studio.evidence import validate_evidence
@@ -123,6 +123,22 @@ class ReportWorkspace:
         job_id = ('reportshare_' if kind == 'overview' else 'report_') + key[:10]
         spec = {'generation_contract': 'research-report-v1', 'operation': kind, 'report_id': key,
                 'input': data.model_dump(), 'input_sha256': hashlib.sha256(data.model_dump_json().encode()).hexdigest()}
+        if kind == 'overview':
+            # Carry QA only for this owner's identical report, never across tenants.
+            for previous in sorted(self.root.glob('*/status.json'), key=lambda p: p.stat().st_mtime, reverse=True):
+                try:
+                    old = self.owned(previous.parent.name, principal['user_id'])
+                    if old['state'] != 'failed' or old.get('request_hash') != fingerprint:
+                        continue
+                    old_job = old.get('billing_job_id', '')
+                    if not re.fullmatch(r'reportshare_[a-f0-9]{10}', old_job):
+                        continue
+                    feedback = read_quality_feedback(self.billing().jobs_root / old_job / 'reselection') or read_quality_feedback(self.billing().jobs_root / old_job)
+                    if feedback:
+                        spec['previous_quality_failure'] = feedback
+                        break
+                except HTTPException:
+                    continue
         parse_input(spec)
 
         async def admit():
@@ -187,7 +203,13 @@ class ReportWorkspace:
                         if event.get('type') == 'error':
                             raise ValueError('Worker report generation failed')
                         if event.get('type') == 'progress':
-                            status.update(state='generating', message='执行节点正在编排内容、核对证据与图形')
+                            stages = {'planning': '正在从全文选择核心问题与图形表达',
+                                      'reselecting': '原表达未通过复核，正在从全文重新选题与设计',
+                                      'generating': '执行节点正在生成内容与图形',
+                                      'composing': '正在编排图表叙事与封面',
+                                      'checking': '正在核对数字、证据、图形与手机可读性'}
+                            stage = event.get('stage') if event.get('stage') in stages else 'generating'
+                            status.update(state=stage, message=stages[stage])
                             self.write(path, status)
                         if event.get('type') == 'completed':
                             if completed is not None:

@@ -9,14 +9,14 @@ from gateway.delivery import delivery_urls
 from tools.report_studio.models import ExportInput
 from tools.report_studio.app import export_html
 from tools.report_studio.generator import ai_report, refine_report, design_reading, design_editorial
-from tools.report_studio.overview_generation import create_overview
+from tools.report_studio.overview_generation import create_overview_with_reselection as create_overview
 from tools.report_studio.runtime import worker_runtime
 
 
-async def generate_report(data, kind, folder, progress):
+async def generate_report(data, kind, folder, progress, *, rejected_design=None):
     if kind == 'overview':
         data.overview = None
-        return await create_overview(data, folder, progress)
+        return await create_overview(data, folder, progress, **({'rejected_design': rejected_design} if rejected_design else {}))
     if kind == 'continue':
         data.overview = None
         data.report = await refine_report(data.report, data.content)
@@ -51,7 +51,8 @@ async def report_stream(req, jobs_root, binary, semaphore):
                 data = parse_input(req.spec)
                 (folder / 'request.json').write_text(req.model_dump_json(indent=2))
                 async with asyncio.timeout(3600):
-                    result = await generate_report(data, req.spec['operation'], folder, progress)
+                    options = {'rejected_design': req.spec['previous_quality_failure']} if req.spec.get('previous_quality_failure') else {}
+                    result = await generate_report(data, req.spec['operation'], folder, progress, **options)
                 staging = folder / 'staging'
                 staging.mkdir()
                 (staging / 'report.json').write_text(result.model_dump_json(indent=2))
