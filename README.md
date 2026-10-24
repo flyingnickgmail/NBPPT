@@ -20,7 +20,7 @@ Codex，同一上下文中读取技能、编排内容、逐页调用 `image_gen`
 - 当前算力结算沿用按页估算，不是订阅账号的实际账单。
 
 执行环境：Python 3.11+，已登录并支持内置图片工具的 Codex CLI。
-回归测试：`python -m pytest -q tests/test_direct_generation.py tests/test_security_delivery.py tests/test_mcp_async.py`。
+回归测试统一入口：`NBPPT_TEST_ROOT=/absolute/task/path bash tools/check.sh`。拉取请求及main推送自动执行全量Python、JavaScript及真实nginx部署链路验收；具体依赖、线上只读复核与边界见[研究报告工作台](docs/REPORT_WORKSPACE.md#验证和发布)。
 MCP 接入与客户端配置见 [异步 MCP 使用说明](docs/MCP.md)。
 可选 Claude 原生路径：模型自主设计原生 PPTX，宿主渲染真实文件后提供预览；管理员按密钥授权 Claude；产品账户历史与额度独立，Claude 运行账号跨进程共用账号锁、持久限流熔断及唯一凭据目录。配置、迁移与发布前门槛见 [Claude 运行说明](deploy/production/README.md#可选官方-claude-code-生成-ppt)。服务器是否已启用须核对运行提交与实际验收结果。
 下文三阶段规划说明适用于旧的 Claude / 视频路径，不能作为新默认链路的验收证据。

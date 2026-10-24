@@ -39,6 +39,10 @@ def enabled(monkeypatch, tmp_path):
     auth.write_text('{"fake-test-only":"not-a-real-token"}')
     auth.chmod(0o600)
     monkeypatch.setenv('NBPPT_CLAUDE_HOME', str(home))
+    # Model the process login HOME as well as the provider profile. Task-local
+    # pytest directories can live under the developer's real HOME; production
+    # must still reject jobs under either of its actual login directories.
+    monkeypatch.setattr(native_deck.Path, 'home', classmethod(lambda cls: home))
     async def login(*_): pass
     monkeypatch.setattr(claude, 'verify_login', login)
     return ClaudeProfile.configured()
@@ -340,6 +344,14 @@ def test_active_content_cannot_hide_behind_an_innocent_filename(tmp_path,name,co
 
 def test_rejects_job_storage_inside_login_home(tmp_path,enabled):
     with pytest.raises(ValueError):native_deck.validate_job_location(enabled.home/'jobs',enabled)
+
+
+def test_rejects_job_storage_inside_distinct_process_home(tmp_path, enabled, monkeypatch):
+    process_home = tmp_path / 'process-home'
+    monkeypatch.setattr(native_deck.Path, 'home', classmethod(lambda cls: process_home))
+    with pytest.raises(ValueError):
+        native_deck.validate_job_location(process_home / 'jobs', enabled)
+    native_deck.validate_job_location(tmp_path / 'jobs', enabled)
 
 
 def test_capabilities_require_key_grant_and_worker_requires_runtime_binding(manager,enabled,monkeypatch):

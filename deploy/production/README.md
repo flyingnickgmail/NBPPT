@@ -4,7 +4,7 @@
 
 ## 发布前
 
-1. 在 macOS 和 Linux Python 3.12 执行 `python -m pytest -q`；检查 Git 差异和密钥泄露。确认数据库无 RUNNING 任务。
+1. 在 macOS 和 Linux Python 3.12 执行 `NBPPT_TEST_ROOT=/absolute/task/path bash tools/check.sh`；部署前再运行 `bash tools/check.sh --deployment`（需nginx、openssl、ffmpeg）。拉取请求与main推送由持续集成执行同一入口及真实代理验收。检查 Git 差异和密钥泄露。确认数据库无 RUNNING 任务。
 2. 记录旧提交；用 SQLite backup API 备份 `workspace/data/platform.db`，同时备份 systemd 单元、环境文件和 nginx 配置到 root 专属目录。禁止在有任务运行时直接覆盖数据库。
 3. 安装 nginx、bubblewrap、apparmor-utils、ffmpeg、fonts-noto-cjk、Python venv、Node/Codex CLI。代码和虚拟环境归 root，服务账号不得写代码。
 4. 建立 `nbppt-worker`、`nbppt-gateway` 系统用户，共享 `nbppt-artifacts` 组；独立 HOME 位于 `/var/lib/`，权限 0700。执行账号单独配置 Codex 登录（auth.json 0600）。只复制经审查的技能文件。
@@ -71,6 +71,8 @@ Certbot >=5.4 支持 IP 证书。使用 webroot + shortlived profile 为服务�
 从经测试的合并提交 `git pull --ff-only origin main`，安装 requirements，校验文件权限，`systemctl daemon-reload`，重启 worker、gateway，检查健康状态后 `nginx -t` 并 reload。防火墙只保留 SSH、已有无关服务及80/443；移除8000/8001公网规则，两服务仅绑定回环。不要暴露 worker。
 
 ## 验证与回滚
+
+报告、分享图与已有PPT/视频的线上下载复核使用 `python -m tools.deployment_acceptance`，参数及密钥处理见 `docs/REPORT_WORKSPACE.md`。选择同一账户拥有的已完成任务；复核不调用模型、不生成新任务、不改变积分。保存新的摘要回执，失败时保留日志并定位HTTP状态；不要因页面加载失败再次付费生成。CI内的合成模型输出只能证明工程交付链，真实内容仍须另行审阅。
 
 检查：TLS证书默认校验成功；未登录 API/MCP/产物401；生成密钥访问管理接口403；跨账号任务不可见；public demo失效；8000/8001公网不可达。通过真实桌面客户端提交、轮询、下载；核验页数、PNG尺寸、摘要、PPT/HTML一致、无重复页，人工逐页检查内容。核对仅结算一次、冻结余额归零。重启恢复和取消退款由自动测试覆盖；生产重启须无在途业务任务。
 
