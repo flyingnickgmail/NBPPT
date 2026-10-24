@@ -38,4 +38,11 @@ jobs:
         env:
           NBPPT_TEST_ROOT: ${{ runner.temp }}/nbppt-checks
           PYTHONDONTWRITEBYTECODE: '1'
-        run: bash tools/check.sh --deployment
+        run: |
+          # Video subprocess limits count every thread for a Linux UID. The
+          # runner account also owns Actions services; use a dedicated test UID
+          # just as production uses a separate non-root execution account.
+          sudo useradd --system --create-home --user-group nbppt-ci
+          sudo chown -R nbppt-ci:nbppt-ci "$GITHUB_WORKSPACE"
+          sudo install -d -o nbppt-ci -g nbppt-ci "$NBPPT_TEST_ROOT"
+          sudo -u nbppt-ci env PATH="$PATH" NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" PYTHONDONTWRITEBYTECODE=1 bash tools/check.sh --deployment
