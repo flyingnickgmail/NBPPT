@@ -84,7 +84,7 @@ def check_deployment(base_url, api_key, report_id=None, media_jobs=(), *, verify
             for denied in [path, path + '/overview.png', '/api/reports/jobs/' + report_id + '/download']:
                 public_denied(denied)
             checks.append({'kind': 'report_share', 'report_id': report_id,
-                           'post_body_bytes': len(json.dumps(data).encode()), 'png_bytes': len(raw),
+                           'post_body_bytes': len(exported.request.content), 'png_bytes': len(raw),
                            'png_sha256': hashlib.sha256(raw).hexdigest(),
                            'html_bytes': len(html.content), 'html_sha256': hashlib.sha256(html.content).hexdigest()})
         for job in media_jobs:
