@@ -55,10 +55,26 @@
 ## 验证和发布
 
 ```bash
-python -m pytest -q
-node --test tests/test_studio.cjs
-node tools/report_studio/tests/overview_generate.cjs
+export NBPPT_TEST_ROOT=/absolute/path/to/this-task
+bash tools/check.sh
+# 另需 nginx、openssl、ffmpeg：真实 TCP、HTTPS 及生产代理配置验收
+bash tools/check.sh --deployment
 ```
+
+同一入口由 `.github/workflows/checks.yml` 在每个拉取请求、main推送及手动运行时执行。CI使用Python 3.12、Node 22，安装FFmpeg、中文字体和nginx；不配置生产密钥或模型登录。测试以独立低权限账号运行，避免视频子进程的每账号线程限制与共享运行器服务冲突；保留生产资源限制，并限制测试进程的数值库线程。模拟模型输出的单元测试提供仅报错退出的CLI占位文件，同时验证缺少CLI时仍拒绝调用。保留可选语音运行时的既有跳过条件，明确启用的部署验收缺少依赖时必须失败。
+
+部署验收启动独立网关和执行节点进程、私有SQLite及带测试证书的nginx，使用真实生产代理配置，只替换监听地址与证书路径。仅付费模型输出换成合成材料和大于1 MB的有效PNG；SSE、报告绑定、发布校验、冻结/结算/退款、跨账号拒绝、PPTX/MP4下载与视频Range请求均走真实接口。恢复旧1 MB报告限制时检查必须失败，恢复正确配置后重新通过。此验收不证明真实模型内容或美术质量。
+
+线上复核已完成结果、不生成或结算新任务：在调用环境安全提供`NBPPT_ACCEPTANCE_API_KEY`，执行下列命令。密钥不得放入URL、命令参数、证据文件或CI秘密配置；输出仅保存检查结果和文件摘要。脚本遵守5次/秒限流、默认验证TLS，拒绝重定向与URL内凭据，并核对验收前后可用及冻结积分不变。
+
+```bash
+python -m tools.deployment_acceptance --base-url https://your-host \
+  --report-id <已含分享图的报告ID> \
+  --media-job ppt_<任务编号> --media-job video_<任务编号> \
+  --output /absolute/path/to/new-receipt.json
+```
+
+不同账户的报告、PPT或视频须分别使用其持有人的现有密钥执行，不扩大任务访问权限。只复核媒体时省略`--report-id`，保留`--media-job`；至少指定一种已完成结果。
 
 测试覆盖真实路由、任务归属、工作节点交付、积分冻结/结算/退款、重复提交、取消、额度不足、原文和图片版本绑定、篡改拒绝及下载字节；测试中的模型输出被替换，不能据此声称真实内容或美术质量通过。发布还须完成Linux隔离环境检查、从主页真实生成、图面检查和下载复核。发布前记录提交、备份数据库和服务配置、确认无运行中任务；回滚代码与服务，不回滚已发生的账目。详见 `deploy/production/README.md`。
 

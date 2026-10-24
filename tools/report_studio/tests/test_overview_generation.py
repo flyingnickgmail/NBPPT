@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,30 @@ from tools.report_studio.overview import attach
 import tools.report_studio.overview_generation as generation
 
 
+@pytest.fixture(autouse=True)
+def model_cli_presence(tmp_path, monkeypatch):
+    # These API tests replay the model output. Presence must not depend on a
+    # developer's logged-in CLI; accidental execution must fail, never bill.
+    binary = tmp_path / 'fixture-bin'
+    binary.mkdir()
+    cli = binary / 'codex'
+    cli.write_text('#!/bin/sh\necho "Unexpected paid model execution in a unit test" >&2\nexit 97\n')
+    cli.chmod(0o700)
+    monkeypatch.setenv('PATH', str(binary) + os.pathsep + os.environ.get('PATH', ''))
+
+
 @pytest.fixture
 def data():
     return ExportInput.model_validate_json((ROOT / 'sample.json').read_text())
+
+
+def test_job_api_without_cli_still_fails_closed(data, tmp_path, monkeypatch):
+    monkeypatch.setattr(application, 'OVERVIEW_JOBS_DIR', tmp_path / 'jobs')
+    monkeypatch.setattr(application.shutil, 'which', lambda name: None)
+    with TestClient(app) as client:
+        response = client.post('/api/overview', json=data.model_dump())
+        assert response.status_code == 503
+    assert not (tmp_path / 'jobs').exists() or not list((tmp_path / 'jobs').iterdir())
 
 
 def plan_for(data):
