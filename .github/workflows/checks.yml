@@ -32,7 +32,7 @@ jobs:
       - name: Install test and media dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig
+          sudo apt-get install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig acl
           python -m pip install -r requirements-dev.txt
       - name: Run all existing checks and the TLS proxy acceptance
         env:
@@ -45,4 +45,13 @@ jobs:
           sudo useradd --system --create-home --user-group nbppt-ci
           sudo chown -R nbppt-ci:nbppt-ci "$GITHUB_WORKSPACE"
           sudo install -d -o nbppt-ci -g nbppt-ci "$NBPPT_TEST_ROOT"
+          # Hosted runner ancestors are private. Grant only traversal to the
+          # two exact working paths, without opening the runner home for listing.
+          for NBPPT_CI_PATH in "$GITHUB_WORKSPACE" "$NBPPT_TEST_ROOT"; do
+            NBPPT_CI_PARENT="$(dirname "$NBPPT_CI_PATH")"
+            while [ "$NBPPT_CI_PARENT" != / ]; do
+              sudo setfacl -m u:nbppt-ci:--x "$NBPPT_CI_PARENT"
+              NBPPT_CI_PARENT="$(dirname "$NBPPT_CI_PARENT")"
+            done
+          done
           sudo -u nbppt-ci env PATH="$PATH" NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" PYTHONDONTWRITEBYTECODE=1 bash tools/check.sh --deployment
