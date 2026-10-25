@@ -32,9 +32,13 @@ jobs:
         with:
           node-version: '22'
       - name: Install test and media dependencies
+        timeout-minutes: 8
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig acl apparmor
+          # The runner's Azure mirror has stalled on large media/font packages.
+          # Use Ubuntu's own archive with bounded retries, never skip packages.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig acl apparmor
           python -m pip install -r requirements-dev.txt -r requirements-microsoft-voice.txt
           npm ci --prefix tests/browser --ignore-scripts --no-audit --no-fund
           tests/browser/node_modules/.bin/playwright install --with-deps chromium
@@ -78,6 +82,10 @@ jobs:
         run: |
           # pytest intentionally creates private directories. Do not broaden
           # their permissions or have the uploader recursively inspect them.
+          if ! id -u nbppt-ci >/dev/null 2>&1; then
+            echo 'Checks did not start; no acceptance receipts exist.'
+            exit 0
+          fi
           sudo -u nbppt-ci env NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" python -B - <<'PY'
           import os
           import shutil
