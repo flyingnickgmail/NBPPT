@@ -426,10 +426,17 @@ async def execute_stream(req: JobExecutionRequest, x_worker_secret: Optional[str
             media_type="text/event-stream",
         )
 
-    if req.english_spec.get("generation_contract") in ("skill-video-v1", "story-video-v2"):
+    if req.english_spec.get("generation_contract") in ("skill-video-v1", "story-video-v2", "exec-pitch-v1"):
         if req.task_type != "video" or not req.job_id.startswith("video_"):
             raise HTTPException(422, "Video contract requires a video job")
         from worker.video_generation import generate_video_stream
+        from gateway.video_contract import validate_video_spec
+        try:
+            validate_video_spec(req.english_spec)
+            if req.english_spec.get('video_preset')=='exec_pitch' and req.execution_mode!='approved_data':
+                raise ValueError('长片分派引擎不一致')
+        except ValueError as exc:
+            raise HTTPException(422,str(exc))
         return StreamingResponse(
             generate_video_stream(req, WORKSPACE_JOBS_DIR, CODEX_BIN, ACCOUNT_SAFE_SEMAPHORE, CLAUDE_BIN),
             media_type="text/event-stream",

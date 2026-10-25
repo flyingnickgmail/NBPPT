@@ -1,0 +1,2 @@
+# Optional P3 glyph inspection; no font files are downloaded or redistributed.
+fonttools==4.67.0

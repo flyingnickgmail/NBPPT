@@ -18,8 +18,10 @@ def mix_original_bed(voice,rate):
     # Duck from measured PCM energy, including pauses inside sentences.
     block=max(1,int(rate*.05));energy=np.array([np.sqrt(np.mean(voice[i:i+block]**2)) for i in range(0,length,block)])
     active=(energy>.003).astype(float)
-    radius=8;active=np.maximum.reduce([np.roll(active,k) for k in range(-radius,radius+1)])
-    smooth=np.convolve(active,np.ones(9)/9,mode='same')[:len(energy)]
+    # Zero padding prevents an utterance at the end from ducking the opening.
+    radius=8;padded=np.pad(active,(radius,radius))
+    active=np.maximum.reduce([padded[k:k+len(active)] for k in range(2*radius+1)])
+    smooth=np.convolve(np.pad(active,(4,4)),np.ones(9)/9,mode='valid')
     gain=np.interp(np.arange(length),np.arange(len(smooth))*block,1-.78*smooth)
     fade=min(int(rate*3),length//2)
     if fade:

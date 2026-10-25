@@ -18,6 +18,8 @@ jobs:
     name: Python, JavaScript and deployment chain
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.quality-output/browsers
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,7 +35,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig acl
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt -r requirements-microsoft-voice.txt
+          npm ci --prefix tests/browser --ignore-scripts --no-audit --no-fund
+          tests/browser/node_modules/.bin/playwright install --with-deps chromium
       - name: Run all existing checks and the TLS proxy acceptance
         env:
           NBPPT_TEST_ROOT: ${{ runner.temp }}/nbppt-checks
@@ -54,4 +58,17 @@ jobs:
               NBPPT_CI_PARENT="$(dirname "$NBPPT_CI_PARENT")"
             done
           done
-          sudo -u nbppt-ci env PATH="$PATH" NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" PYTHONDONTWRITEBYTECODE=1 bash tools/check.sh --deployment
+          sudo -u nbppt-ci env PATH="$PATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" PYTHONDONTWRITEBYTECODE=1 bash tools/check.sh --deployment
+      - name: Preserve the exact gate and product receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: product-acceptance-evidence
+          path: |
+            ${{ runner.temp }}/nbppt-checks/**/gate.json
+            ${{ runner.temp }}/nbppt-checks/**/pytest.xml
+            ${{ runner.temp }}/nbppt-checks/**/*.log
+            ${{ runner.temp }}/nbppt-checks/**/workbench/receipt.json
+            ${{ runner.temp }}/nbppt-checks/**/workbench/workbench.png
+          if-no-files-found: warn
+          retention-days: 14

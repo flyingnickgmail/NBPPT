@@ -115,6 +115,40 @@ def _trusted_tts_runtime(voice: str = "melo") -> tuple[Path, Path]:
 
 
 def package_video(job_id: str, job_dir: Path, spec: dict, planner_dir: Path | None = None) -> tuple[dict, dict]:
+    if spec.get('video_preset')=='exec_pitch':
+        from gateway.exec_pitch_inputs import load_input
+        from gateway.exec_pitch_delivery import content_markdown, source_manifest
+        value,timeline,_=load_input(spec['video_input_owner'],spec['video_input_id'],spec)
+        from gateway.product_visuals import resolve_visuals
+        product_visuals=resolve_visuals(value,spec)
+        width,height=(1280,720) if spec['video_aspect_ratio']=='16:9' else (720,1280)
+        actual={**spec,'video_render_engine':spec.get('video_render_engine','html_chromium'),
+                'exec_pitch_input':value,'exec_pitch_timeline':timeline,
+                'video_sections':value['sections'],'video_scenes':value['shots'],
+                'video_width':width,'video_height':height,'fps':24,'video_audio':True,
+                'task_summary_cn':value['title'],'is_real_llm':False,
+                'compiler_engine':('登记口播 → HTML/Lottie分块动态镜头 → 独立交付检查'
+                                   if spec.get('video_render_engine','html_chromium')=='html_chromium'
+                                   else '已登记口播与镜头 → 实测音频节拍 → 可信本地剪辑'),
+                'narration':{'requested':True,'status':'generated','provider':'approved_local',
+                             'voice':'approved_local','audio_track':'aac','sample_rate':48000,
+                             'media_kind':value['media_kind'],'alignment':'measured_beats_not_words'}}
+        staging=job_dir/'staging'
+        if product_visuals:
+            (staging/'product_visuals.json').write_text(json.dumps(product_visuals['receipt'],ensure_ascii=False,indent=2))
+        for name,data in [('manuscript.json',value),('storyboard.json',value['shots']),
+                          ('timeline.json',timeline),('source_manifest.json',source_manifest(actual))]:
+            (staging/name).write_text(json.dumps(data,ensure_ascii=False,indent=2))
+        (staging/'content_manuscript.md').write_text(content_markdown(value))
+        if 'story' in value:
+            from gateway.exec_pitch_story import story_manifest,brief_markdown
+            (staging/'story_brief.md').write_text(brief_markdown(value))
+            (staging/'story_evidence.json').write_text(json.dumps(story_manifest(value,timeline),ensure_ascii=False,indent=2))
+        from gateway.exec_pitch_voice import narration_text
+        (staging/'narration.txt').write_text(narration_text(value))
+        (job_dir/'validated_video_plan.json').write_text(json.dumps(actual,ensure_ascii=False,indent=2))
+        return actual,{'status':'PLAN_VALIDATED','planned_sections':len(value['sections']),
+                       'planned_shots':len(value['shots']),'media_kind':value['media_kind']}
     plan_path = (planner_dir or job_dir) / "video_plan.json"
     if plan_path.is_symlink() or not plan_path.is_file() or not plan_path.resolve().is_relative_to(job_dir.resolve()):
         raise ValueError("规划器没有生成安全的视频计划文件")
@@ -151,6 +185,7 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
     renderer_proc = None
     speech_proc = None
     subtitle_proc = None
+    qa_proc = None
     renderer_log = None
     speech_log = None
     acquired = False
@@ -160,10 +195,11 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
     try:
         safe_job_id(req.job_id)
         spec = validate_video_spec(req.english_spec)
+        executive=spec.get('video_preset')=='exec_pitch'
         if spec.get("video_subtitles", True):
             from worker.video_subtitles import preflight_subtitles
             await asyncio.to_thread(preflight_subtitles)
-        if spec.get("video_narration", True):
+        if spec.get("video_narration", True) and not executive:
             _trusted_tts_runtime(spec.get("video_voice", "melo"))
         job_dir = Path(jobs_root) / req.job_id
         job_dir.mkdir(parents=True, exist_ok=False)
@@ -185,7 +221,9 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
             catalog=await discovery_task
             spec['_footage_catalog']=planner_catalog(catalog,spec['video_aspect_ratio'])
         author_cost = None
-        if spec.get("planner_provider") == "claude_cli":
+        if executive:
+            yield event('progress',pct=35,stage='storyboarding',message_cn='正在核对已登记口播、实测音频、原文证据与镜头时间轴。')
+        elif spec.get("planner_provider") == "claude_cli":
             from worker.video_authoring import author_video
             async for update in author_video(req, job_dir, claude_bin, semaphore, turn_runner=author_turn):
                 data = json.loads(update[6:])
@@ -239,15 +277,34 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
             (staging / "content_manuscript.md").write_text(manuscript_markdown(actual_spec["video_manuscript"]))
             (staging / "narration.txt").write_text("\n\n".join(x["narration"] for x in actual_spec["video_manuscript"]["sections"]))
             (staging / "storyboard.json").write_text(json.dumps({"task_summary_cn": actual_spec["task_summary_cn"], "story": actual_spec["story"], "scenes": actual_spec["video_scenes"]},ensure_ascii=False,indent=2))
-        yield event("progress", pct=50, message_cn=f"{len(actual_spec['video_scenes'])} 个场景已通过原文引用、时长和排版检查。")
+        plan_message=(f"{len(actual_spec['video_sections'])} 个口播段落、{len(actual_spec['video_scenes'])} 个镜头已通过原文和实测时间轴检查。"
+                      if executive else f"{len(actual_spec['video_scenes'])} 个场景已通过原文引用、时长和排版检查。")
+        yield event('progress',pct=50,message_cn=plan_message)
         if RENDER_SEMAPHORE.locked():
             yield event("progress",pct=50,stage="rendering",message_cn="分镜已检查，等待视频渲染资源。")
-        await RENDER_SEMAPHORE.acquire()
+        queue_started=time.monotonic()
+        while not render_acquired:
+            try:
+                await asyncio.wait_for(RENDER_SEMAPHORE.acquire(),timeout=10)
+                render_acquired=True
+            except asyncio.TimeoutError:
+                if executive and time.monotonic()-queue_started>900:
+                    raise TimeoutError('长片渲染队列等待超过15分钟，请稍后重试')
+                yield event('progress',pct=50,stage='queued',message_cn='正在等待单任务视频渲染资源。')
         render_acquired = True
         renderer_env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"),
                         "LANG": os.environ.get("LANG", "C.UTF-8"), "PYTHONUNBUFFERED": "1"}
         if os.environ.get("NBPPT_FFMPEG"):
             renderer_env["NBPPT_FFMPEG"] = os.environ["NBPPT_FFMPEG"]
+        if executive:
+            renderer_env['NBPPT_EXEC_PITCH_ROOT']=os.environ.get('NBPPT_EXEC_PITCH_ROOT','')
+            for name in ('NBPPT_BILINGUAL_FONT','NBPPT_BILINGUAL_FONT_SHA256',
+                         'NBPPT_EXEC_REVIEW_ROOT','NBPPT_EXEC_REVISION_ROOT'):
+                if name in os.environ:renderer_env[name]=os.environ[name]
+            if os.environ.get('NBPPT_PRODUCT_VISUAL_ROOT'):
+                renderer_env['NBPPT_PRODUCT_VISUAL_ROOT']=os.environ['NBPPT_PRODUCT_VISUAL_ROOT']
+            from worker.html_motion_renderer import ENV_KEYS
+            renderer_env.update({key:os.environ[key] for key in ENV_KEYS if key in os.environ})
         renderer_log = (job_dir / "renderer_exec.log").open("wb")
         renderer_proc = await asyncio.create_subprocess_exec(
             sys.executable, str(RENDERER), "--job-dir", str(job_dir), "--job-id", req.job_id,
@@ -278,7 +335,7 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
             renderer_error = (job_dir / "renderer_exec.log").read_text(encoding="utf-8", errors="replace")
             raise RuntimeError("可信视频渲染失败：" + renderer_error[-800:])
 
-        if actual_spec["narration"]["requested"]:
+        if actual_spec["narration"]["requested"] and not executive:
             voice = actual_spec.get("video_voice", "melo")
             tts_python, model_dir = _trusted_tts_runtime(voice)
             speech_env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"),
@@ -321,35 +378,69 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
             expected_provider = voice_provider(voice)
             if speech_result.get("provider") != expected_provider or speech_result.get("voice", "melo") != voice:
                 raise RuntimeError("配音结果与请求音色不一致")
+            if speech_result.get('rate','-6%')!=actual_spec.get('video_voice_rate','-6%'):
+                raise RuntimeError('配音结果与请求合成语速不一致')
             actual_spec["video_audio"] = True
             actual_spec["narration"] = {"requested": True, "status": "generated",
                                         "provider": expected_provider, "voice": voice, "script_source": "video_scenes",
                                         "audio_track": "aac", "sample_rate": speech_result["sample_rate"],
                                         "scenes": speech_result["scenes"]}
+            if 'video_voice_rate' in actual_spec:actual_spec['narration']['rate']=actual_spec['video_voice_rate']
             (job_dir / "validated_video_plan.json").write_text(
                 json.dumps(actual_spec, ensure_ascii=False, indent=2), encoding="utf-8")
 
         staging = job_dir / "staging"
         if spec.get("video_subtitles", True):
-            yield event("progress", pct=92, message_cn="正在按实际时间轴烧录中文字幕。")
+            bilingual=executive and bool(actual_spec['exec_pitch_input'].get('bilingual'))
+            yield event("progress", pct=92, message_cn="正在烧录已审中韩双语字幕。" if bilingual else "正在按实际时间轴烧录中文字幕。")
             video_path = staging / f"{req.job_id}_video.mp4"
             subtitled = staging / f"{req.job_id}_subtitled.mp4"
             subtitle_proc = await asyncio.create_subprocess_exec(
                 sys.executable, str(SUBTITLE_RENDERER), "--video", str(video_path),
                 "--subtitles", str(staging / "subtitles.vtt"), "--output", str(subtitled),
+                *(['--bilingual-plan',str(job_dir/'validated_video_plan.json')] if bilingual else []),
                 cwd=ROOT, env=renderer_env, stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True)
-            stdout, stderr = await asyncio.wait_for(subtitle_proc.communicate(), timeout=max(180, spec["video_duration_sec"] * 8))
+            subtitle_wait=asyncio.create_task(subtitle_proc.communicate())
+            subtitle_started=time.monotonic()
+            while not subtitle_wait.done():
+                await asyncio.wait({subtitle_wait},timeout=10)
+                if time.monotonic()-subtitle_started>max(180,spec['video_duration_sec']*8):
+                    raise TimeoutError('中文字幕处理超时')
+                if not subtitle_wait.done():
+                    yield event('progress',pct=92,stage='subtitles',message_cn='正在编码中文字幕，原始配音保持不变。')
+            stdout,stderr=await subtitle_wait
             if subtitle_proc.returncode != 0 or subtitled.is_symlink() or not subtitled.is_file():
                 raise RuntimeError("中文字幕处理失败：" + (stdout + stderr).decode("utf-8", errors="replace")[-800:])
             os.replace(subtitled, video_path)
             actual_spec["subtitles_burned"] = True
             (job_dir / "validated_video_plan.json").write_text(json.dumps(actual_spec, ensure_ascii=False, indent=2), encoding="utf-8")
         yield event("progress", pct=94, message_cn="视频编码完成，正在检查时长、比例和文件完整性。")
-        manifest = inspect_delivery(req.job_id, "video", actual_spec, staging)
+        if executive:
+            with (job_dir/'qa_exec.log').open('wb') as qa_log:
+                qa_proc=await asyncio.create_subprocess_exec(sys.executable,str(ROOT/'worker/video_qa.py'),
+                    '--job-dir',str(job_dir),'--job-id',req.job_id,cwd=ROOT,env=renderer_env,
+                    stdin=asyncio.subprocess.DEVNULL,stdout=qa_log,stderr=qa_log,start_new_session=True)
+                qa_started=time.monotonic()
+                while qa_proc.returncode is None:
+                    try:
+                        await asyncio.wait_for(qa_proc.wait(),timeout=10)
+                    except asyncio.TimeoutError:
+                        if time.monotonic()-qa_started>max(180,spec['video_duration_sec']*4):
+                            raise TimeoutError('长片完整交付检查超时')
+                        yield event('progress',pct=94,stage='checking',message_cn='正在完整解码并复核声音、时间轴、稿件与来源。')
+                if qa_proc.returncode:
+                    raise ValueError('长片完整交付检查失败；详见任务QA日志')
+            manifest=json.loads((job_dir/'qa_manifest.json').read_text())
+        else:
+            manifest=inspect_delivery(req.job_id,'video',actual_spec,staging)
         audio_check = ("可信渲染器已输出 H.264 MP4、海报、旁白字幕和所选中文配音"
                        if actual_spec["video_audio"] else
                        "可信渲染器已输出 H.264 MP4、海报和文字字幕；请求明确选择静音")
+        if executive:
+            audio_check=('可信剪辑器复用已登记合成测试音调（非人声），未调用配音服务'
+                         if actual_spec['exec_pitch_input']['media_kind']=='synthetic_fixture'
+                         else '可信剪辑器复用已登记本地口播音频，未重新合成')
         qa.update({"status": "PASSED", "delivered_scenes": len(actual_spec["video_scenes"]),
                    "video_resolution": f"{actual_spec['video_width']}×{actual_spec['video_height']}",
                    "fps": 24, "video_audio": actual_spec["video_audio"],
@@ -357,12 +448,17 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
                                  audio_check,
                                  "视频文件时长及画面比例检查通过；内容事实仍需人工复核"],
                    "verdict_cn": "文件检查通过；配音状态与产物元数据一致"})
+        if executive:
+            qa.pop('delivered_scenes',None)
+            qa.update(delivered_sections=len(actual_spec['video_sections']),delivered_shots=len(actual_spec['video_scenes']))
+            qa['checks_cn'][0]='逐镜原文引用、数字、音频实测与帧时间轴检查通过'
         (staging / "qa_report.json").write_text(json.dumps(qa, ensure_ascii=False, indent=2), encoding="utf-8")
         (staging / "delivery.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
         staging.rename(job_dir / "output")
         terminal_event = event("completed", pct=100,
-                    total_cost_usd=round(author_cost if author_cost is not None else 0.002 * actual_spec["video_duration_sec"], 6), cost_is_estimate=True,
-                    used_real_claude_cli=author_cost is not None, used_real_codex_cli=author_cost is None, compiled_spec=actual_spec,
+                    total_cost_usd=0.0 if executive else round(author_cost if author_cost is not None else 0.002 * actual_spec["video_duration_sec"], 6), cost_is_estimate=not executive,
+                    cost_scope='external_provider_only_local_compute_unpriced' if executive else 'existing_estimate',
+                    used_real_claude_cli=author_cost is not None, used_real_codex_cli=author_cost is None and not executive, compiled_spec=actual_spec,
                     qa_report=qa, cdn_urls=delivery_urls(req.job_id, manifest))
     except ProviderUnavailable as exc:
         terminal_event = event("error", message=str(exc), provider_state=exc.state, retry_after_seconds=exc.retry_after)
@@ -382,6 +478,7 @@ async def generate_video_stream(req, jobs_root: Path, codex_bin: str, semaphore:
                 await stop_process(renderer_proc)
                 await stop_process(speech_proc)
                 await stop_process(subtitle_proc)
+                await stop_process(qa_proc)
         finally:
             if renderer_log:
                 renderer_log.close()

@@ -179,10 +179,14 @@ class AsyncCreateJobRequest(BaseModel):
     request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,80}$")
     task_type: Literal['ppt', 'video'] = 'ppt'
     execution_mode: Literal['auto', 'codex_cli', 'claude_cli', 'claude_codex'] = 'auto'
-    video_duration_sec: int = Field(default=30, ge=6, le=180, strict=True)
+    video_duration_sec: int = Field(default=30, ge=6, le=600, strict=True)
+    video_preset: Literal['legacy','short','exec_pitch'] = 'legacy'
+    video_input_id: str = Field(default='',max_length=64)
+    video_render_engine: Literal['auto','html_chromium','registered_video'] = 'auto'
     video_visual_mode: str = "motion"
     video_aspect_ratio: Literal['16:9', '9:16'] = '16:9'
-    video_voice: Literal['melo', 'kokoro_female', 'kokoro_male', 'microsoft_yunxi', 'microsoft_xiaoxiao'] = 'melo'
+    video_voice: Literal['melo', 'kokoro_female', 'kokoro_male', 'microsoft_yunxi', 'microsoft_xiaoxiao', 'microsoft_yunjian', 'approved_local'] = 'melo'
+    video_voice_rate: Literal['-6%','+0%','+10%'] = '-6%'
     video_narration: bool = Field(default=True, strict=True)
     video_subtitles: bool = Field(default=True, strict=True)
 
@@ -243,6 +247,8 @@ async def get_templates():
 def production_capabilities(principal=None):
     from gateway.ppt_contract import available_ppt_engines
     from gateway.voice_input import capability
+    from gateway.exec_pitch_inputs import enabled as exec_enabled
+    from gateway.product_visuals import configured as visuals_configured
     return {
         "voice_input": capability(),
         "ppt": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"],
@@ -251,8 +257,17 @@ def production_capabilities(principal=None):
         "video": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["video"],
                   "progress": True, "preview_after_validation": True, "retry": True,
                   "planner_providers": {"codex_cli": True, "claude_cli": "claude_cli" in available_ppt_engines(allow_claude=(principal or {}).get("allow_claude",False))},
-                  "narration": "melo_tts", "voices": ["melo"] + (["microsoft_yunxi", "microsoft_xiaoxiao"] if os.getenv("NBPPT_MICROSOFT_EDGE_ENABLED","false").lower()=="true" else []) + (["kokoro_female", "kokoro_male"] if os.getenv("NBPPT_KOKORO_ENABLED", "false").lower() == "true" else []),
+                  "narration": "melo_tts", "voices": ["melo"] + (["microsoft_yunxi", "microsoft_xiaoxiao", "microsoft_yunjian"] if os.getenv("NBPPT_MICROSOFT_EDGE_ENABLED","false").lower()=="true" else []) + (["kokoro_female", "kokoro_male"] if os.getenv("NBPPT_KOKORO_ENABLED", "false").lower() == "true" else []),
+                  "microsoft_synthesis_rates":['-6%','+0%','+10%'],
                   "manuscript": True, "voice_input": True,
+                  "presets": {"legacy":{"max_seconds":180,"long_form_provider":"claude_cli"},
+                              "short":{"max_seconds":60},
+                              "exec_pitch":{"enabled":exec_enabled(),"max_seconds":600,"min_shots_at_480s":40,
+                                            "max_shots":240,"max_sections":30,"input":"registered_local","voice":"approved_local",
+                                            "default_render_engine":"html_chromium","render_engines":["html_chromium","registered_video"],
+                                            "product_visuals":{"supported":True,"configured":visuals_configured(),
+                                                "input":"registered_manifest","missing_behavior":"block",
+                                                "kinds":["crm_screenshot","brand_still","brand_broll","brand_logo"]}}},
                   "burned_subtitles": True, "duration_range": [6, 180], "long_form_provider": "claude_cli", "visual_modes": ["motion"] + (["live_action"] if os.getenv("NBPPT_SCENE_SOURCE")=="search" or pathlib.Path(os.getenv("NBPPT_SCENE_CATALOG","/nonexistent")).is_file() else []), "aspect_ratios": ["16:9", "9:16"]},
         "composite": {"supported": True, "freeze_credits": TASK_FREEZE_CREDITS["ppt"] + TASK_FREEZE_CREDITS["video"],
                       "progress": True, "preview_after_validation": True, "retry": True,
@@ -542,7 +557,8 @@ async def create_job(req: AsyncCreateJobRequest, request: Request):
                                      req.slide_count, req.request_id, req.task_type,
                                      req.video_duration_sec, req.video_aspect_ratio,
                                      req.video_voice, req.video_narration, req.video_subtitles,
-                                     execution_mode=req.execution_mode, video_visual_mode=req.video_visual_mode)
+                                     execution_mode=req.execution_mode, video_visual_mode=req.video_visual_mode, video_voice_rate=req.video_voice_rate,
+                                     video_preset=req.video_preset,video_input_id=req.video_input_id,video_render_engine=req.video_render_engine)
     except (ValueError, PermissionError) as exc:
         job_error(exc, conflict="request_id已用于" in str(exc))
 

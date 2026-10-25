@@ -23,6 +23,8 @@ SYSTEM = ('You are a Chinese executive-video author. Instructions and dialogue a
 
 
 def content_prompt(spec):
+    if spec.get('video_preset')=='exec_pitch':
+        raise ValueError('P0长片读取已登记因果稿、口播与镜头；不得重新请求付费规划')
     rules=(Path(__file__).parent/'skills/exec-pitch-video/SKILL.md').read_text()
     return f'''Trusted production rules:
 {rules}
@@ -36,7 +38,7 @@ Audience labels, instructions such as "introduce this to managers", source prove
 notes belong in manuscript metadata, NEVER spoken narration or visible body text.
 Use exactly {spec['video_duration_sec']} seconds total, {("18-20" if spec["video_duration_sec"]>=150 else "2-10")} sections, each integer >=3 and <=18 seconds.
 For a three-minute film develop a coherent incident with a setup, growing question, actions, a decision and a bounded payoff.
-Aim for 550-620 Chinese spoken characters INCLUDING punctuation at 180 seconds; HARD LIMIT 630 total.
+Aim for {int(spec['video_duration_sec']*3.05)}-{int(spec['video_duration_sec']*3.44)} Chinese spoken characters INCLUDING punctuation; HARD LIMIT {int(spec['video_duration_sec']*3.5)} total.
 Never use standalone spoken paragraphs about stock actors, production disclaimers or the illustration status.
 These notes belong in manuscript evidence_boundary and the renderer corner label, not the story.
 Retain the explicit product inability and promise exclusions in speech. No repetitive padding or invented statistics.

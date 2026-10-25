@@ -28,6 +28,6 @@ python -B tools/quality_gate.py --output "$HOME/Workspace/codex/2026-10-25-nbppt
 
 ## 自动执行与审阅责任
 
-`.github/workflows/quality.yml` 在拉取请求和 main 推送时调用同一门禁，使用无生产凭据的隔离运行时并保留日志与截图。工作流文件落地不等于已在 GitHub 运行；仓库管理员仍需在托管平台把该检查设为必需检查。未推送前，本地 `gate.json` 是已运行的证据。
+`.github/workflows/checks.yml` 是唯一自动测试入口，在拉取请求、main 推送及手动运行时，通过 `tools/check.sh --deployment` 调用同一门禁；它保留已有独立低权限CI账号、进程预算与真实TCP/TLS/nginx报告交付验收，同时增加能力文档和真实浏览器工作台。没有并行的第二套质量工作流。工作流修改尚未推送时，本地 `gate.json` 才是本轮已运行证据；不能用之前main的CI成功替代本轮候选。
 
 提交前检查差异是否含全部新增依赖、技能和资源。审阅者核对真实产品入口、来源与能力边界，人工判断内容、故事和视觉效果；自动文件通过不能改写成人工认可。当前能力唯一总览是 [VIDEO_CAPABILITIES.md](VIDEO_CAPABILITIES.md)，历史文档只指向该页。

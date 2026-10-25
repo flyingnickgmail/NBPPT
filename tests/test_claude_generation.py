@@ -33,9 +33,6 @@ def enabled(monkeypatch, tmp_path):
     monkeypatch.setenv('NBPPT_ACCOUNT_STATE_DIR', str(tmp_path / 'accounts'))
     monkeypatch.setenv('NBPPT_REQUIRE_ISOLATION', 'false')
     home = tmp_path / 'home'
-    # This fixture represents a fake operator as well as a fake provider home.
-    # Keep the production deny rule intact when pytest lives under ~/Workspace.
-    monkeypatch.setattr(native_deck.Path, 'home', classmethod(lambda cls: home))
     (home / '.claude').mkdir(parents=True, mode=0o700)
     (home / '.claude.json').write_text(json.dumps({'oauthAccount': {'accountUuid': 'unit-test-account'}}))
     auth = home / '.claude/.credentials.json'

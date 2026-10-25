@@ -21,6 +21,7 @@ OPTIONAL_SKIPS = {
     'test_video_integrated': 'optional voice integration runtime required',
     'test_html_motion': 'optional pinned HTML runtime not configured',
     'test_product_visuals': 'optional pinned HTML runtime not configured',
+    'test_deployed_reports': 'enable --deployment to run the real proxy acceptance',
 }
 
 
@@ -75,6 +76,7 @@ def html_test_runtime(env):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True,help='Absolute task evidence parent; each run uses a fresh subdirectory')
+    parser.add_argument('--deployment',action='store_true',help='Require real TCP/TLS/nginx proxy acceptance')
     args=parser.parse_args()
     if not args.output.is_absolute(): parser.error('--output must be absolute')
     run=args.output.resolve()/('run-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid.uuid4().hex[:8])
@@ -83,7 +85,7 @@ def main():
     before=source_inventory()
     tree_hash=hashlib.sha256(json.dumps(before,sort_keys=True).encode()).hexdigest()
     report={'head':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
-            'tree_sha256':tree_hash,'source_files':before,'phases':{},'result':'FAILED'}
+            'tree_sha256':tree_hash,'source_files':before,'phases':{},'deployment_acceptance':args.deployment,'result':'FAILED'}
     env={**os.environ,'TMPDIR':str(run/'tmp'),'TMP':str(run/'tmp'),'TEMP':str(run/'tmp'),
          'DATABASE_PATH':str(run/'imports.db'),'NBPPT_JOBS_ROOT':str(run/'import-jobs'),
          'PYTHONDONTWRITEBYTECODE':'1','NBPPT_TEST_PYTHON':sys.executable,'NBPPT_ACCEPTANCE_TREE_SHA':tree_hash}
@@ -96,6 +98,8 @@ def main():
     try:
         for tool in ('node','ffmpeg','ffprobe'):
             if not shutil.which(tool): raise RuntimeError('Mandatory acceptance dependency missing: '+tool)
+        if args.deployment and any(not shutil.which(p) for p in ('nginx','openssl')):
+            raise RuntimeError('Deployment acceptance requires nginx and openssl; do not skip the proxy checks')
         env.update(html_test_runtime(env))
         report['html_runtime']={key:value for key,value in env.items() if key in (
             'NBPPT_CHROMIUM_VERSION','NBPPT_CHROMIUM_SHA256','NBPPT_HTML_FONT_SHA256')}
@@ -107,8 +111,10 @@ def main():
         phase('dependencies',[sys.executable,'-m','pip','check'])
         phase('video_docs',[sys.executable,'-B','tools/check_video_docs.py'])
         phase('backend',[sys.executable,'-B','-m','pytest','-q','-ra','--basetemp',str(run/'pytest'),
-                         '-o','cache_dir='+str(run/'pytest-cache'),'--junitxml='+str(run/'pytest.xml')])
+                         '-o','cache_dir='+str(run/'pytest-cache'),'--junitxml='+str(run/'pytest.xml')]+(['--deployment'] if args.deployment else []))
         report['backend']=check_results(run/'pytest.xml')
+        if args.deployment and any('test_deployed_reports' in s['test'] for s in report['backend']['skipped']):
+            raise ValueError('Explicit deployment acceptance must not be skipped')
         frontends=sorted((ROOT/'tests').glob('*.cjs'))+sorted((ROOT/'tools/report_studio/tests').glob('*.cjs'))
         phase('frontend',['node','--test',*[str(p.relative_to(ROOT)) for p in frontends]])
         phase('workbench',['node','tools/workbench_acceptance.mjs',str(run/'workbench')])

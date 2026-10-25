@@ -21,6 +21,14 @@ workspace/jobs/
 workspace/cdn_storage/
 workspace/acceptance-*/
 workspace/live-film-media/
+workspace/exec-pitch-p0*/
+workspace/exec-pitch-p1*/
+workspace/exec-pitch-p2*/
+workspace/exec-pitch-p3*/
+workspace/exec-pitch-p4*/
+workspace/exec-pitch-p5*/
+workspace/exec-pitch-p6*/
+worker/html_motion/node_modules/
 
 # Third-party heavy PPT template repositories (cloned on demand)
 worker/external_ppt_skills/
@@ -35,6 +43,9 @@ worker/external_ppt_skills/
 workspace/reports/
 workspace/data/reports/
 workspace/report-release/
+
 # Automated product-route acceptance dependencies and CI evidence
 tests/browser/node_modules/
 .quality-output/
+
+workspace/report-home-integration/

@@ -66,6 +66,7 @@
 <h3 id="video-audio-heading">配音</h3>
 <div class="config-row"><label for="video-narration">是否配音</label><select id="video-narration"><option value="on">开启中文配音</option><option value="off">关闭配音 · 静音视频</option></select></div>
 <div class="config-row"><label for="video-voice">配音音色</label><select id="video-voice"><option value="melo">默认中文配音</option></select></div>
+<div class="config-row"><label for="video-voice-rate">合成语速</label><select id="video-voice-rate"><option value="-6%">原有舒缓语速（−6%）</option><option value="+0%">正常语速</option><option value="+10%">合成时提速 10%</option></select></div>
 <button type="button" id="video-voice-audition" class="text-link" disabled>试听所选音色</button>
 <audio id="video-voice-audio" controls preload="none" hidden aria-label="配音音色试听"></audio>
 <p id="video-voice-help" class="note" role="status">选择音色后可先试听；此设置用于下一次生成，不修改已有成片。</p>
@@ -104,6 +105,8 @@
 </div>
 </div>
 <div id="video-options" hidden>
+<div class="config-row"><label for="video-preset">视频预设</label><select id="video-preset"><option value="legacy">现有模式 · 最长3分钟</option><option value="short">短片 · 最长60秒</option><option id="video-exec-option" value="exec_pitch" disabled>高管汇报长片 · 已登记口播与镜头</option></select></div>
+<div id="video-input-row" hidden><label for="video-input-id">已登记内容包编号</label><input id="video-input-id" maxlength="64" autocomplete="off" placeholder="输入本账户获准使用的内容包编号"><label for="video-render-engine">长片画面制作</label><select id="video-render-engine"><option value="auto">默认 · HTML动态镜头</option><option value="registered_video">兼容 · 已登记视频剪辑</option></select><p class="note">最长10分钟。使用已登记音频与镜头，不重新请求配音；口播时长不匹配会明确失败。产品截图和品牌素材须有覆盖本次客户及用途的审批记录，缺失时不自动补造。草稿仍须人工审阅。</p></div>
 <div class="config-row"><label for="video-engine">视频制作方式</label><select id="video-engine"><option value="codex_cli">Codex · 图文动画</option><option id="video-claude-option" value="claude_cli" disabled>Claude · 内容、口播与镜头制作</option></select></div>
 <div class="config-row"><label for="video-visual">画面方式</label><select id="video-visual"><option value="motion">解释动画</option><option id="video-live-option" value="live_action" disabled>实景故事剪辑 · Claude</option></select></div>
 <p id="video-claude-status" role="status" hidden></p><button type="button" id="video-claude-check" hidden>检查 Claude 账号状态</button>
@@ -117,6 +120,8 @@
 <option value="60">60 秒</option>
 <option value="120">2 分钟 · Claude</option>
 <option value="180">3 分钟 · Claude</option>
+<option value="480">8 分钟 · 高管汇报长片</option>
+<option value="600">10 分钟 · 高管汇报长片</option>
 </select>
 </div>
 <div class="config-row">

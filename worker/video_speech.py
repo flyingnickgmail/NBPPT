@@ -121,11 +121,11 @@ def prepare_manuscript_audio(job_dir, spec, manuscript, engine=None):
     from gateway.video_manuscript import validate_manuscript
     from gateway.video_contract import narration_density
     voice=spec.get('video_voice')
-    if voice not in {'microsoft_yunxi','microsoft_xiaoxiao'}:
+    if voice not in {'microsoft_yunxi','microsoft_xiaoxiao','microsoft_yunjian'}:
         raise SpeechError('前置自然配音仅支持已验收的微软音色')
     if engine is None:
         from worker.video_microsoft_voice import MicrosoftEngine
-        engine=MicrosoftEngine(voice)
+        engine=MicrosoftEngine(voice,rate=spec.get('video_voice_rate','-6%'))
     work=Path(job_dir)/'prepared-speech'
     work.mkdir(exist_ok=False)
     spoken=[];records=[]
@@ -141,11 +141,11 @@ def prepare_manuscript_audio(job_dir, spec, manuscript, engine=None):
     timed={**manuscript,'sections':[{**s,'duration_sec':t} for s,t in zip(manuscript['sections'],times)]}
     timed=validate_manuscript(timed,spec)
     (Path(job_dir)/'manuscript.json').write_text(json.dumps(timed,ensure_ascii=False,indent=2))
-    (Path(job_dir)/'speech_cache.json').write_text(json.dumps({'voice':voice,'scenes':records},ensure_ascii=False,indent=2))
+    (Path(job_dir)/'speech_cache.json').write_text(json.dumps({'voice':voice,'rate':spec.get('video_voice_rate','-6%'),'scenes':records},ensure_ascii=False,indent=2))
     return timed
 
 
-def _mux_audio(video: Path, audio: Path, destination: Path, duration: int, normalise: bool = False) -> None:
+def _mux_audio(video: Path, audio: Path, destination: Path, duration: int, normalise: bool = False, sample_rate: int | None = None, audio_profile: str = 'legacy') -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise SpeechError("FFmpeg 未安装，无法封装中文配音")
@@ -156,14 +156,20 @@ def _mux_audio(video: Path, audio: Path, destination: Path, duration: int, norma
     if normalise:
         if __package__ in (None, ""):
             sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from gateway.audio_contract import measure_loudness
-        levels=measure_loudness(audio)
+        from gateway.audio_contract import measure_loudness, profile_targets
+        target=profile_targets(audio_profile)
+        options={'profile':audio_profile} if audio_profile!='legacy' else {}
+        compressor='acompressor=threshold=0.063:ratio=3:attack=0.1:release=150:makeup=1' if audio_profile=='exec_pitch_p3' else ''
+        if compressor:options['pre_filter']=compressor
+        levels=measure_loudness(audio,timeout_sec=max(120,duration*2),**options)
         # Leave a decibel of headroom for AAC and the subsequent subtitle mux.
-        filters=("loudnorm=I=-16:TP=-2.5:LRA=7:linear=true:"
+        filters=(f"loudnorm=I=-16:TP={target['normalization_peak']}:LRA=7:linear=true:"
                  f"measured_I={levels['input_i']}:measured_TP={levels['input_tp']}:"
                  f"measured_LRA={levels['input_lra']}:measured_thresh={levels['input_thresh']}:"
                  f"offset={levels['target_offset']}")
-        command += ["-af", filters]
+        command += ["-af", (compressor+',' if compressor else '')+filters]
+    if sample_rate is not None:
+        command += ['-ar',str(sample_rate)]
     command += [str(destination)]
     process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                start_new_session=False)
@@ -179,6 +185,28 @@ def _mux_audio(video: Path, audio: Path, destination: Path, duration: int, norma
         raise SpeechError("中文配音封装超时") from exc
     if process.returncode != 0:
         raise SpeechError("中文配音封装失败：" + stderr.decode("utf-8", errors="replace")[-800:])
+    if audio_profile!='legacy':
+        from gateway.audio_contract import measure_loudness, verify_loudness, profile_targets
+        levels=measure_loudness(destination,profile=audio_profile,timeout_sec=max(120,duration*2))
+        loudness=float(levels['input_i']);peak=float(levels['input_tp'])
+        # One bounded local correction uses encoded AAC evidence. A mix with
+        # transient peaks may have insufficient gain headroom; in that case a
+        # fixed dynamic normalization pass is used instead. Never retry this
+        # correction or lower either final acceptance bound.
+        gain=min(-16-loudness,-4.1-peak,1.5)
+        dynamic=loudness+max(0,gain)<-17 or peak>profile_targets(audio_profile)['maximum_peak']
+        if dynamic or loudness < -16.5 and gain>0:
+            import tempfile
+            with tempfile.TemporaryDirectory(prefix='.audio-correction-',dir=destination.parent) as temp:
+                corrected=Path(temp)/'corrected.mp4'
+                correction=(f"loudnorm=I=-16:TP={profile_targets(audio_profile)['normalization_peak']}:LRA=7:linear=false"
+                            if dynamic else f'volume={gain:.4f}dB')
+                subprocess.run([ffmpeg,'-v','error','-nostdin','-i',str(destination),'-map','0:v:0','-map','0:a:0',
+                    '-c:v','copy','-af',correction,'-c:a','aac','-b:a','128k','-ar',str(sample_rate or 48000),
+                    '-movflags','+faststart',str(corrected)],check=True,capture_output=True,timeout=max(120,duration*3))
+                verify_loudness(corrected,profile=audio_profile,timeout_sec=max(120,duration*2))
+                os.replace(corrected,destination)
+        verify_loudness(destination,profile=audio_profile,timeout_sec=max(120,duration*2))
 
 
 def synthesize_narration(job_dir: Path, job_id: str, plan: dict, engine=None) -> dict:
@@ -198,7 +226,7 @@ def synthesize_narration(job_dir: Path, job_id: str, plan: dict, engine=None) ->
     if not isinstance(scenes, list) or not scenes:
         raise SpeechError("缺少已验证的配音场景")
     voice = plan.get("video_voice", "melo")
-    microsoft = voice in {"microsoft_yunxi", "microsoft_xiaoxiao"}
+    microsoft = voice in {"microsoft_yunxi", "microsoft_xiaoxiao", "microsoft_yunjian"}
     if voice not in VOICE_IDS and not microsoft:
         raise SpeechError("不支持的视频音色")
     cache_path=job_dir/'speech_cache.json'
@@ -207,14 +235,15 @@ def synthesize_narration(job_dir: Path, job_id: str, plan: dict, engine=None) ->
         if cache_path.is_symlink():
             raise SpeechError('配音缓存路径不安全')
         cached=json.loads(cache_path.read_text())
-        if cached.get('voice')!=voice or len(cached.get('scenes',[]))!=len(scenes):
+        if (cached.get('voice')!=voice or cached.get('rate','-6%')!=plan.get('video_voice_rate','-6%')
+                or len(cached.get('scenes',[]))!=len(scenes)):
             raise SpeechError('配音缓存与分镜不一致')
     if engine is None and cached is None:
         if microsoft:
             if __package__ in (None, ""):
                 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
             from worker.video_microsoft_voice import MicrosoftEngine
-            engine = MicrosoftEngine(voice)
+            engine = MicrosoftEngine(voice,rate=plan.get('video_voice_rate','-6%'))
         else:
             model_dir = trusted_model_dir(voice)
             engine = build_engine(model_dir) if voice == "melo" else build_kokoro_engine(model_dir)
@@ -295,6 +324,7 @@ def synthesize_narration(job_dir: Path, job_id: str, plan: dict, engine=None) ->
         os.replace(muxed, video)
         result = {"provider": "microsoft_edge" if microsoft else ("melo_tts" if voice == "melo" else "kokoro"), "voice": voice, "sample_rate": sample_rate,
                   "total_duration_sec": total_duration, "scenes": scene_results}
+        if microsoft and 'video_voice_rate' in plan:result['rate']=plan['video_voice_rate']
         (job_dir / "speech_result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps({"type": "progress", "pct": 100, "message": "audio_muxed"}), flush=True)
         return result

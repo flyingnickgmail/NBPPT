@@ -453,6 +453,9 @@ def render_video(job_dir: Path, job_id: str, plan: dict) -> dict:
     if assets.exists() and (not assets.is_dir() or assets.is_symlink() or
                             not assets.resolve().is_relative_to(staging.resolve())):
         raise RenderError("视频资源目录不安全")
+    if plan.get('generation_contract')=='exec-pitch-v1':
+        from worker.exec_pitch_renderer import render_exec
+        return render_exec(job_dir,job_id,plan)
     if plan.get("video_visual_mode")=="live_action":
         from worker.live_action_renderer import render_film
         return render_film(job_dir,job_id,plan)
