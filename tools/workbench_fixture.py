@@ -23,12 +23,14 @@ def main():
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    (output/'tmp').mkdir()
     database = output/'fixture.db'
     if database.exists():
         raise ValueError('Use a new acceptance directory; never reopen an existing wallet')
     sys.path.insert(0, str(ROOT))
     worker_secret = secrets.token_urlsafe(40)
     os.environ.update(DATABASE_PATH=str(database), NBPPT_JOBS_ROOT=str(output/'jobs'),
+                      TMPDIR=str(output/'tmp'), TMP=str(output/'tmp'), TEMP=str(output/'tmp'),
                       NBPPT_COOKIE_SECURE='false', NBPPT_CLAUDE_ENABLED='false',
                       NBPPT_MICROSOFT_EDGE_ENABLED='true', NBPPT_KOKORO_ENABLED='false',
                       NBPPT_REQUIRE_ISOLATION='false', NBPPT_REPORT_MODEL_ENABLED='false')
@@ -78,7 +80,8 @@ def main():
         with sqlite3.connect(database) as db:
             jobs = db.execute('SELECT job_id,user_id,status,credits_charged FROM media_jobs ORDER BY rowid').fetchall()
             wallets = db.execute('SELECT id,credits_available,credits_frozen FROM users ORDER BY id').fetchall()
-        return JSONResponse({'jobs': jobs, 'wallets': wallets})
+            errors = db.execute('SELECT job_id,error_msg FROM media_jobs WHERE error_msg IS NOT NULL').fetchall()
+        return JSONResponse({'jobs': jobs, 'wallets': wallets, 'errors':errors})
 
     # These two routes exist ONLY in this private fixture process, before the MCP mount.
     gateway.app.router.routes.insert(0, Mount('/_acceptance_worker', app=worker_api.app))

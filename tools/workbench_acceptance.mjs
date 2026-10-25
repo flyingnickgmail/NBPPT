@@ -1,6 +1,6 @@
 /** Real root-page acceptance. No mocked responses, DOM stand-ins or live models. */
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn,execFileSync} from 'node:child_process';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
@@ -15,8 +15,14 @@ const {chromium} = require('playwright');
 const output = path.resolve(process.argv[2] || '');
 assert(process.argv[2] && path.isAbsolute(process.argv[2]), 'Pass an absolute, fresh acceptance output directory');
 await fs.mkdir(output, {recursive: true});
-const server = spawn(process.env.NBPPT_TEST_PYTHON || 'python3',
-  ['-B', path.join(root, 'tools/workbench_fixture.py'), '--output', output],
+const fixtureOutput=path.join(output,'fixture');await fs.mkdir(fixtureOutput,{recursive:true});
+const fixtureRunner=process.env.NBPPT_TEST_FIXTURE_RUNNER;
+if(fixtureRunner){
+  assert(process.platform==='linux'&&path.isAbsolute(fixtureRunner),'Use only an explicitly configured Linux fixture launcher');
+  execFileSync('setfacl',['-m','u:nbppt-fixture:rwx',fixtureOutput]);
+}
+const server = spawn(fixtureRunner || process.env.NBPPT_TEST_PYTHON || 'python3',
+  [...(fixtureRunner?[]:['-B',path.join(root,'tools/workbench_fixture.py')]),'--output',fixtureOutput],
   {cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe']});
 let logs = '', browser, context;
 server.stderr.on('data', x => { logs = (logs+x).slice(-50000); });
@@ -155,6 +161,7 @@ try {
   console.log('Real workbench acceptance PASSED: '+path.join(output,'receipt.json'));
 } catch(error) {
   receipt.result='FAILED'; receipt.error=String(error.message).slice(0,2000);
+  if(receipt.origin){try{receipt.fixture_state=await (await fetch(receipt.origin+'/_acceptance_state')).json();console.error(JSON.stringify(receipt.fixture_state));}catch{}}
   await fs.writeFile(path.join(output,'receipt.json'),JSON.stringify(receipt,null,2));
   throw error;
 } finally {
