@@ -117,6 +117,12 @@ def main():
         phase('browser_test_syntax',['node','--check','tools/workbench_acceptance.mjs'])
         phase('dependencies',[sys.executable,'-m','pip','check'])
         phase('video_docs',[sys.executable,'-B','tools/check_video_docs.py'])
+        # Catch real browser/host incompatibilities before long media regressions.
+        # The final result still requires every phase and the same source tree.
+        phase('workbench',['node','tools/workbench_acceptance.mjs',str(run/'workbench')])
+        receipt=json.loads((run/'workbench/receipt.json').read_text())
+        if receipt.get('result')!='PASSED' or receipt.get('page_path')!='/' or receipt.get('tree_sha256')!=tree_hash:
+            raise ValueError('Browser evidence must refer to the tested root product and source tree')
         phase('backend',[sys.executable,'-B','-m','pytest','-q','-ra','--basetemp',str(run/'pytest'),
                          '-o','cache_dir='+str(run/'pytest-cache'),'--junitxml='+str(run/'pytest.xml')]+(['--deployment'] if args.deployment else []))
         report['backend']=check_results(run/'pytest.xml')
@@ -124,10 +130,6 @@ def main():
             raise ValueError('Explicit deployment acceptance must not be skipped')
         frontends=sorted((ROOT/'tests').glob('*.cjs'))+sorted((ROOT/'tools/report_studio/tests').glob('*.cjs'))
         phase('frontend',['node','--test',*[str(p.relative_to(ROOT)) for p in frontends]])
-        phase('workbench',['node','tools/workbench_acceptance.mjs',str(run/'workbench')])
-        receipt=json.loads((run/'workbench/receipt.json').read_text())
-        if receipt.get('result')!='PASSED' or receipt.get('page_path')!='/' or receipt.get('tree_sha256')!=tree_hash:
-            raise ValueError('Browser evidence must refer to the tested root product and source tree')
         if source_inventory()!=before: raise ValueError('Source changed during checks; evidence is stale, rerun after edits stop')
         report['result']='PASSED'
     except Exception as exc:

@@ -41,7 +41,10 @@ try {
   const fixture = JSON.parse(line);
   await waitForServer(fixture.origin);
   receipt.origin = fixture.origin; receipt.page_path = '/';
-  const browserEnv={...process.env};
+  const browserEnv={PATH:process.env.PATH,HOME:path.join(output,'browser-home'),
+    XDG_CACHE_HOME:path.join(output,'browser-cache'),XDG_CONFIG_HOME:path.join(output,'browser-config'),
+    TMPDIR:process.env.TMPDIR,TMP:process.env.TMP,TEMP:process.env.TEMP};
+  for(const name of ['browser-home','browser-cache','browser-config','browser-crashes'])await fs.mkdir(path.join(output,name),{recursive:true});
   if(process.platform==='linux'){
     const socketRoot=process.env.NBPPT_HTML_SOCKET_ROOT;
     assert(socketRoot&&path.isAbsolute(socketRoot)&&Buffer.byteLength(socketRoot)<=40,'Linux browser acceptance needs the private short IPC root');
@@ -51,9 +54,12 @@ try {
   }
   // Use the same pinned full Chromium that the render gate and exact-path
   // AppArmor policy verified, rather than an unapproved headless-shell binary.
-  browser = await chromium.launch({headless:true,chromiumSandbox:true,
-    executablePath:process.env.NBPPT_CHROMIUM_BIN||chromium.executablePath(),env:browserEnv});
-  context = await browser.newContext({viewport:{width:1280,height:900}, acceptDownloads:true});
+  context = await chromium.launchPersistentContext(path.join(output,'browser-profile'),{
+    headless:true,chromiumSandbox:true,viewport:{width:1280,height:900},acceptDownloads:true,
+    executablePath:process.env.NBPPT_CHROMIUM_BIN||chromium.executablePath(),env:browserEnv,
+    args:[`--disk-cache-dir=${path.join(output,'browser-cache')}`,`--crash-dumps-dir=${path.join(output,'browser-crashes')}`,
+      '--disable-breakpad','--disable-crash-reporter']});
+  browser=context.browser();
   // All browser requests stay on this fixture, including media. Block external egress.
   await context.route('**/*', route => new URL(route.request().url()).origin === fixture.origin
     ? route.continue() : route.abort());
