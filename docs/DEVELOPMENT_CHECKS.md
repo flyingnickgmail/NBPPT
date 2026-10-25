@@ -31,3 +31,5 @@ python -B tools/quality_gate.py --output "$HOME/Workspace/codex/2026-10-25-nbppt
 `.github/workflows/checks.yml` 是唯一自动测试入口，在拉取请求、main 推送及手动运行时，通过 `tools/check.sh --deployment` 调用同一门禁；它保留已有独立低权限CI账号、进程预算与真实TCP/TLS/nginx报告交付验收，同时增加能力文档和真实浏览器工作台。没有并行的第二套质量工作流。工作流修改尚未推送时，本地 `gate.json` 才是本轮已运行证据；不能用之前main的CI成功替代本轮候选。
 
 提交前检查差异是否含全部新增依赖、技能和资源。审阅者核对真实产品入口、来源与能力边界，人工判断内容、故事和视觉效果；自动文件通过不能改写成人工认可。当前能力唯一总览是 [VIDEO_CAPABILITIES.md](VIDEO_CAPABILITIES.md)，历史文档只指向该页。
+
+Ubuntu CI 为本次固定浏览器的精确绝对路径加载允许用户命名空间的 AppArmor 规则；不关闭系统范围的限制，也不使用 `--no-sandbox`。生产启用 HTML 长片前须单独验证同类浏览器沙箱能力，CI 规则不会自动修改服务器。最终黑帧扫描显式解码为全范围灰度，避免不同 FFmpeg 版本把有限范围黑色的亮度16误当成正常画面；有限/全范围的黑帧和冻结负例都须拒绝。

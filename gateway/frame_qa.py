@@ -69,7 +69,7 @@ def inspect_frames(video,spec,root):
     if (work/'contact-sheet.png').is_symlink():raise ValueError('帧质检联系表路径不安全')
     # All frames, not just headers or selected representatives.
     raw=subprocess.run(['ffmpeg','-v','error','-nostdin','-threads','2','-i',str(video),'-an','-vf',
-        'scale=96:54,format=gray','-f','rawvideo','-'],check=True,capture_output=True,timeout=max(120,seconds*2)).stdout
+        'scale=96:54:in_range=auto:out_range=full,format=gray','-f','rawvideo','-'],check=True,capture_output=True,timeout=max(120,seconds*2)).stdout
     if len(raw)!=timeline['total_frames']*96*54:raise ValueError('最终逐帧解码数量与时钟不一致')
     frames=np.frombuffer(raw,dtype=np.uint8).reshape((-1,54*96))
     # Captions/review labels must not disguise a black main picture.

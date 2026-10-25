@@ -34,10 +34,22 @@ jobs:
       - name: Install test and media dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig acl
+          sudo apt-get install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig acl apparmor
           python -m pip install -r requirements-dev.txt -r requirements-microsoft-voice.txt
           npm ci --prefix tests/browser --ignore-scripts --no-audit --no-fund
           tests/browser/node_modules/.bin/playwright install --with-deps chromium
+          # Ubuntu restricts user namespaces for downloaded browsers. Allow
+          # only this exact ephemeral browser path, preserving both Chromium's
+          # sandbox and the host-wide AppArmor restriction.
+          NBPPT_CI_CHROMIUM="$(node -e "process.stdout.write(require('./tests/browser/node_modules/playwright').chromium.executablePath())")"
+          sudo tee /etc/apparmor.d/nbppt-ci-chromium >/dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile nbppt-ci-chromium "$NBPPT_CI_CHROMIUM" flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/nbppt-ci-chromium
       - name: Run all existing checks and the TLS proxy acceptance
         env:
           NBPPT_TEST_ROOT: ${{ runner.temp }}/nbppt-checks

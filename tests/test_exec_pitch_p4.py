@@ -87,10 +87,12 @@ def test_missing_or_uncertain_client_evidence_never_passes(p4):
 
 
 @pytest.mark.parametrize(('color','message'),[('black','黑帧'),('green','冻结')])
-def test_final_frame_gate_rejects_actual_black_or_frozen_encoding(p4,tmp_path,color,message):
+@pytest.mark.parametrize('color_range',['tv','pc'])
+def test_final_frame_gate_rejects_actual_black_or_frozen_encoding(p4,tmp_path,color,message,color_range):
     v,a,root,s,t=p4;video=tmp_path/'bad.mp4'
     subprocess.run(['ffmpeg','-v','error','-nostdin','-f','lavfi','-i',
-        f'color=c={color}:s=1280x720:r=24:d=6','-an','-c:v','libx264','-threads','2',str(video)],check=True,timeout=30)
+        f'color=c={color}:s=1280x720:r=24:d=6','-vf',f'scale=out_range={color_range}',
+        '-color_range',color_range,'-an','-c:v','libx264','-threads','2',str(video)],check=True,timeout=30)
     with pytest.raises(ValueError,match=message):inspect_frames(video,{**s,'exec_pitch_timeline':t},tmp_path)
 
 
