@@ -85,6 +85,9 @@ jobs:
           sudo visudo -cf /etc/sudoers.d/nbppt-fixture
           sudo install -d -m 700 -o nbppt-ci -g nbppt-ci "$NBPPT_HTML_SOCKET_ROOT"
           sudo chown -R nbppt-ci:nbppt-ci "$GITHUB_WORKSPACE"
+          # Config imports verify this existing parent even with an isolated DB.
+          # It stays read-only to the fixture UID; fixture data uses its ACL root.
+          sudo -u nbppt-ci mkdir -p "$GITHUB_WORKSPACE/workspace/data"
           sudo install -d -o nbppt-ci -g nbppt-ci "$NBPPT_TEST_ROOT"
           # Hosted runner ancestors are private. Grant only traversal to the
           # two exact working paths, without opening the runner home for listing.
