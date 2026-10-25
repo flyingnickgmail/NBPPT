@@ -25,6 +25,12 @@ OPTIONAL_SKIPS = {
 }
 
 
+def check_tracked_runtime(paths):
+    for name in paths:
+        if {'node_modules','.venv','venv'}.intersection(Path(name).parts):
+            raise ValueError('Runtime dependencies must not be tracked, including local symlinks: '+name)
+
+
 def source_inventory():
     names = subprocess.check_output(['git','ls-files','-z','--cached','--others','--exclude-standard'], cwd=ROOT).decode().split('\0')
     return {name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
@@ -96,6 +102,7 @@ def main():
         if result.returncode: raise RuntimeError(f'{name} failed; see {run/(name+".log")}')
         print(name+': PASSED',flush=True)
     try:
+        check_tracked_runtime(subprocess.check_output(['git','ls-files','-z'],cwd=ROOT).decode().split('\0'))
         for tool in ('node','ffmpeg','ffprobe'):
             if not shutil.which(tool): raise RuntimeError('Mandatory acceptance dependency missing: '+tool)
         if args.deployment and any(not shutil.which(p) for p in ('nginx','openssl')):

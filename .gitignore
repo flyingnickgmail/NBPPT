@@ -45,7 +45,7 @@ workspace/data/reports/
 workspace/report-release/
 
 # Automated product-route acceptance dependencies and CI evidence
-tests/browser/node_modules/
+tests/browser/node_modules
 .quality-output/
 
 workspace/report-home-integration/

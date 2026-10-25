@@ -4,7 +4,14 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from tools.check_video_docs import capability_table, check_document, START, END
-from tools.quality_gate import check_results
+from tools.quality_gate import check_results, check_tracked_runtime
+
+
+@pytest.mark.parametrize('path',['tests/browser/node_modules','worker/html_motion/node_modules/playwright/package.json','.venv/bin/python'])
+def test_local_dependency_links_and_installs_cannot_enter_a_release(path):
+    with pytest.raises(ValueError,match='must not be tracked'):
+        check_tracked_runtime([path])
+    check_tracked_runtime(['tests/browser/package-lock.json','worker/html_motion/scene.js'])
 
 
 def test_capability_document_tracks_contracts_and_rejects_stale_claims():
