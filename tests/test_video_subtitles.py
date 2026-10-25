@@ -38,6 +38,34 @@ def _vtt(path: Path, text: str = "完整字幕逐字烧录", end: int = 2) -> st
     return value
 
 
+def test_fractional_frame_cues_do_not_round_past_the_cut(tmp_path):
+    source=tmp_path/'source.vtt';prepared=tmp_path/'burn.vtt'
+    original='WEBVTT\n\n00:00:00.000 --> 00:00:09.542\n前段\n\n00:00:09.542 --> 00:00:16.417\n后段\n'
+    source.write_text(original)
+    video_subtitles._prepare_burn_vtt(source,prepared,1280,720)
+    text=prepared.read_text()
+    assert '00:00:09.540 --> 00:00:16.410' in text
+    assert source.read_text()==original
+
+
+def test_actual_first_frame_after_fractional_cut_has_the_new_caption(tmp_path,monkeypatch):
+    import numpy as np
+    source=tmp_path/'source.mp4';captions=tmp_path/'captions.vtt';output=tmp_path/'out.mp4'
+    _video(source,duration=4,size='1280x720');monkeypatch.setenv('NBPPT_FFMPEG',str(FFMPEG_FULL))
+    # 52/24 is 2.166667; the source VTT's nearest millisecond is 2.167.
+    captions.write_text('WEBVTT\n\n00:00:00.000 --> 00:00:02.167\n前\n\n00:00:02.167 --> 00:00:04.000\n后段字幕已经切换\n')
+    burn_subtitles(source,captions,output)
+    arrays=[]
+    for frame in (51,52,53):
+        png=tmp_path/f'{frame}.png'
+        subprocess.run([str(FFMPEG_FULL),'-v','error','-nostdin','-i',str(output),'-vf',f'select=eq(n\\,{frame})',
+            '-frames:v','1',str(png)],check=True,capture_output=True)
+        with Image.open(png) as im:arrays.append(np.asarray(im.convert('RGB').crop((100,600,1180,710))).astype(float))
+    before,at,after=arrays
+    assert np.mean(np.abs(before-at))>2
+    assert np.mean(np.abs(at-after))<1
+
+
 def test_burns_complete_vtt_preserves_streams_and_replaces_stale_output(tmp_path, monkeypatch):
     source = tmp_path / "source.mp4"
     captions = tmp_path / "captions.vtt"
@@ -145,6 +173,15 @@ def test_long_cue_is_split_into_two_line_timed_segments_without_loss(tmp_path):
     assert all(len(block.splitlines()[1:]) <= 2 for block in cue_blocks)
     reconstructed = "".join("".join(block.splitlines()[1:]) for block in cue_blocks)
     assert reconstructed == text
+
+
+def test_landscape_caption_does_not_strand_closing_punctuation():
+    text='回到开头：找回包裹还不够，让一次判断留下可追溯的依据，才是要解决的事。'
+    chunks=video_subtitles._caption_chunks(text,1280,720)
+    lines=chunks[0].splitlines()
+    assert ''.join(lines)==text
+    assert len(lines)==2 and all(2<=len(line)<=34 for line in lines)
+    assert all(line[0] not in '，。；：、！？' for line in lines)
 
 
 def test_landscape_two_line_caption_stays_below_safe_rule(tmp_path, monkeypatch):

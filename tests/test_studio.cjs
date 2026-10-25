@@ -30,6 +30,7 @@ function harness(fetch, crypto = webcrypto) {
     sessionStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,String(v)),removeItem:k=>storage.delete(k)},
     fetch, URL, Option:class { constructor(text,value){ this.text=text; this.value=value; } }, crypto, TextEncoder, Uint8Array,
     location, setTimeout:fn=>{timers.add(fn);return fn;}, clearTimeout:fn=>timers.delete(fn)
+
   });
   let source = fs.readFileSync('gateway/static/studio.js','utf8');
   source = source.slice(0, source.lastIndexOf("updateMode('ppt');"));
@@ -45,11 +46,63 @@ function harness(fetch, crypto = webcrypto) {
       get(){return {activeTask,authenticated,ready,mode,states:{ppt:states.ppt,video:states.video},deliveries:{ppt:deliveries.ppt,video:deliveries.video}}}
     };`, ctx);
   return {api:ctx.testApi, get, timers, storage, location};
+
 }
 
 const response = (body,status=200) => ({ok:status<400,status,json:async()=>body});
 const tick = () => new Promise(resolve=>setImmediate(resolve));
 const sourceText = '完整测试内容，展示问题进展以及下周的责任分工和验收标准。';
+
+test('Yunjian rate and matching audition reach the actual creation payload',async()=>{
+  const requests=[];
+  const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs'){requests.push(JSON.parse(options.body));return response({job_id:'video_abcdef0123'});}
+    return response({status:'RUNNING'});
+  });
+  h.api.set({mode:'video',capabilities:{delivery_modes:{ppt:{supported:true},video:{supported:true,voices:['microsoft_yunjian','microsoft_yunxi']}}}});
+  h.get('source').value=sourceText;h.get('video-voice').value='microsoft_yunjian';h.get('video-voice-rate').value='+10%';h.api.controls();
+  assert.equal(h.get('video-voice-audio').src,'/static/voice-samples/p3-B.m4a');
+  assert.equal(h.get('video-voice-rate').disabled,false);
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  assert.equal(requests[0].video_voice,'microsoft_yunjian');assert.equal(requests[0].video_voice_rate,'+10%');
+  for(const candidate of ['A','B','C'])assert.ok(fs.statSync(`gateway/static/voice-samples/p3-${candidate}.m4a`).size>1024);
+  h.api.set({mode:'video',capabilities:{delivery_modes:{ppt:{supported:true},video:{supported:true,voices:['microsoft_yunjian']}}}});
+  h.get('video-voice-rate').value='-6%';h.api.controls();assert.equal(h.get('video-voice-audition').disabled,true);
+});
+
+test('exec_pitch reaches the real video endpoint with the registered input and preserves composite PPT engine', async () => {
+  const requests=[];
+  const h=harness(async(path,options={})=>{
+    if(path==='/api/jobs'){const payload=JSON.parse(options.body);requests.push(payload);return response({job_id:payload.task_type==='video'?'video_abcdef0123':'ppt_0123456789'});}
+    if(path==='/api/wallet') return response({user:{credits_available:1900}});
+    return response({status:'RUNNING'});
+  });
+  h.api.set({capabilities:{delivery_modes:{ppt:{supported:true,execution_modes:['codex_cli','claude_cli']},video:{supported:true,presets:{exec_pitch:{enabled:true}}}}}});
+  h.api.updateMode('composite');h.get('source').value=sourceText;h.get('video-preset').value='exec_pitch';
+  h.get('video-input-id').value='a'.repeat(64);h.get('video-duration').value='480';
+  h.get('video-render-engine').value='registered_video';
+  h.get('video-engine').value='claude_cli';h.get('ppt-engine').value='claude_cli';h.api.controls();
+  assert.equal(h.get('video-input-row').hidden,false);assert.equal(h.get('video-engine').disabled,true);
+  await h.get('brief').onsubmit({preventDefault(){}});await tick();
+  const video=requests.find(x=>x.task_type==='video'),ppt=requests.find(x=>x.task_type==='ppt');
+  assert.equal(video.video_preset,'exec_pitch');assert.equal(video.video_input_id,'a'.repeat(64));
+  assert.equal(video.video_duration_sec,480);assert.equal(video.execution_mode,'auto');
+  assert.equal(video.video_voice,'approved_local');assert.equal(video.video_visual_mode,'registered_local');
+  assert.equal(video.video_render_engine,'registered_video');
+  assert.equal(ppt.execution_mode,'claude_cli');assert.equal(ppt.video_preset,undefined);
+  h.api.clearSession();assert.equal(h.get('video-input-id').value,'');
+});
+
+test('unavailable or malformed executive input cannot submit and short preset cannot accept eight minutes', async () => {
+  const requests=[];const h=harness(async(path,options={})=>{requests.push(path);return response({});});
+  h.api.set({mode:'video'});h.get('source').value=sourceText;h.get('video-preset').value='exec_pitch';
+  h.get('video-duration').value='480';await h.get('brief').onsubmit({preventDefault(){}});
+  assert.equal(requests.length,0);
+  h.api.set({mode:'video',capabilities:{delivery_modes:{ppt:{supported:true},video:{supported:true,presets:{exec_pitch:{enabled:true}}}}}});
+  h.get('video-input-id').value='../../private';await h.get('brief').onsubmit({preventDefault(){}});assert.equal(requests.length,0);
+  h.get('video-preset').value='short';h.get('video-engine').value='claude_cli';
+  await h.get('brief').onsubmit({preventDefault(){}});assert.equal(requests.length,0);
+});
 
 test('Claude selection is advertised explicitly and stays on the PPT side of composite jobs', async () => {
   const requests=[];

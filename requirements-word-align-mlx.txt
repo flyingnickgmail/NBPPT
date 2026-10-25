@@ -1,0 +1,5 @@
+# Optional offline operator tooling on Apple Silicon; not gateway dependencies.
+# Provision local model weights separately. Runtime refuses network downloads.
+mlx==0.32.4
+mlx-audio==0.5.9
+transformers==5.20.1

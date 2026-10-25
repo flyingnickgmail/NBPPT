@@ -116,7 +116,10 @@ def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path
             if text_path.stat().st_size > 4 * 1024 * 1024 or text_path.read_text(encoding="utf-8") != outline_markdown(plan):
                 raise DeliveryError("文字版缺失或与策划不一致")
             files.extend([plan_path, text_path])
-    if task_type in ("video", "composite"):
+    if task_type in ("video", "composite") and spec.get('generation_contract')=='exec-pitch-v1':
+        from gateway.exec_pitch_delivery import inspect_exec
+        files.extend(inspect_exec(job_id,spec,root))
+    if task_type in ("video", "composite") and spec.get('generation_contract')!='exec-pitch-v1':
         video = contained_file(root, f"{job_id}_video.mp4")
         try:
             result = subprocess.run(
@@ -157,6 +160,8 @@ def inspect_delivery(job_id: str, task_type: str, spec: dict, root: pathlib.Path
                     if (narration.get('voice') != voice or
                             narration.get('provider') != voice_provider(voice)):
                         raise ValueError('Requested voice was not delivered')
+                    if narration.get('rate','-6%')!=spec.get('video_voice_rate','-6%'):
+                        raise ValueError('Requested synthesis rate was not delivered')
                 if spec.get('video_subtitles') is True and spec.get('subtitles_burned') is not True:
                     raise ValueError('Requested burned subtitles were not delivered')
                 if audio and (len(audio) != 1 or audio[0].get('codec_name') != 'aac'
@@ -285,6 +290,10 @@ def delivery_urls(job_id: str, manifest: dict) -> dict:
         "narration_url": base+'narration.txt' if 'narration.txt' in paths else None,
         "storyboard_url": base+'storyboard.json' if 'storyboard.json' in paths else None,
         "storyboard_preview_url": base+'assets/storyboard.png' if 'assets/storyboard.png' in paths else None,
+        "timeline_url": base+'timeline.json' if 'timeline.json' in paths else None,
+        "source_manifest_url": base+'source_manifest.json' if 'source_manifest.json' in paths else None,
+        "render_chunks_url": base+'render_chunks.json' if 'render_chunks.json' in paths else None,
+        "product_visuals_url": base+'product_visuals.json' if 'product_visuals.json' in paths else None,
         "mp4_url": next((base + p for p in paths if p.endswith(".mp4")), None),
         "video_poster_url": base + 'assets/video_poster.png' if 'assets/video_poster.png' in paths else None,
         "subtitles_url": base + 'subtitles.vtt' if 'subtitles.vtt' in paths else None,

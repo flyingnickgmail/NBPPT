@@ -9,10 +9,17 @@ LAYOUTS = {"title", "comparison", "process"}
 STORY_CONTRACT = "story-video-v2"
 STORY_SHOTS = {"focus", "scatter", "gather", "inspect", "decision", "journey", "feedback", "resolve"}
 STORY_ROLES = {"hook", "friction", "mechanism", "choice", "resolution"}
-VIDEO_VOICES = {"melo", "kokoro_female", "kokoro_male", "microsoft_yunxi", "microsoft_xiaoxiao"}
+VIDEO_VOICES = {"melo", "kokoro_female", "kokoro_male", "microsoft_yunxi", "microsoft_xiaoxiao", "microsoft_yunjian", "approved_local"}
+
+
+def validate_voice_rate(voice, rate):
+    if rate not in ('-6%','+0%','+10%') or rate!='-6%' and voice not in ('microsoft_yunxi','microsoft_xiaoxiao','microsoft_yunjian'):
+        raise ValueError('合成语速仅支持已启用的中文微软音色；不得改变已登记本地音频')
 
 
 def voice_provider(voice: str) -> str:
+    if voice == 'approved_local':
+        return 'approved_local'
     if voice.startswith("microsoft_"):
         return "microsoft_edge"
     return "melo_tts" if voice == "melo" else "kokoro"
@@ -90,14 +97,19 @@ def validate_footage_review(clip: dict, spec: dict) -> None:
 
 
 def validate_video_spec(spec: dict) -> dict:
-    if not isinstance(spec, dict) or spec.get("generation_contract") not in ("skill-video-v1", STORY_CONTRACT):
+    if not isinstance(spec, dict) or spec.get("generation_contract") not in ("skill-video-v1", STORY_CONTRACT, 'exec-pitch-v1'):
         raise ValueError("视频任务缺少受支持的视频契约")
     source = spec.get("original_prompt_cn")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("视频任务缺少完整中文原文")
     duration = spec.get("video_duration_sec")
-    if type(duration) is not int or not 6 <= duration <= (180 if spec.get("planner_provider")=="claude_cli" else 60):
-        raise ValueError("视频时长必须是 6 至 180 秒的整数；超过60秒需Claude内容模式")
+    preset=spec.get('video_preset','legacy')
+    if preset not in ('legacy','short','exec_pitch'):
+        raise ValueError('视频预设无效')
+    executive=preset=='exec_pitch'
+    maximum=600 if executive else (180 if spec.get('planner_provider')=='claude_cli' and preset!='short' else 60)
+    if type(duration) is not int or not 6 <= duration <= maximum:
+        raise ValueError(f"当前视频预设时长必须是6至{maximum}秒的整数；legacy超过60秒需Claude内容模式")
     ratio = spec.get("video_aspect_ratio")
     if ratio not in ("16:9", "9:16"):
         raise ValueError("视频比例只能是 16:9 或 9:16")
@@ -107,9 +119,22 @@ def validate_video_spec(spec: dict) -> dict:
         raise ValueError("视频配音开关必须是布尔值")
     if spec.get("video_voice", "melo") not in VIDEO_VOICES:
         raise ValueError("不支持的视频音色")
+    validate_voice_rate(spec.get('video_voice','melo'),spec.get('video_voice_rate','-6%'))
     if "video_subtitles" in spec and type(spec["video_subtitles"]) is not bool:
         raise ValueError("视频字幕开关必须是布尔值")
     provider = spec.get("planner_provider", "codex_cli")
+    if executive:
+        from gateway.exec_pitch_contract import hash_id
+        if (spec['generation_contract']!='exec-pitch-v1' or provider!='approved_data'
+                or spec.get('video_render_engine','html_chromium') not in ('html_chromium','registered_video')
+                or spec.get('video_voice')!='approved_local' or spec.get('video_narration') is not True
+                or spec.get('video_visual_mode')!='registered_local'
+                or not hash_id(spec.get('video_input_id')) or not hash_id(spec.get('video_input_owner'))):
+            raise ValueError('长片必须使用账户隔离的已登记本地口播与镜头输入')
+        return spec
+    if (spec['generation_contract']=='exec-pitch-v1' or spec.get('video_voice')=='approved_local'
+            or spec.get('video_input_id') or spec.get('video_render_engine','auto')!='auto'):
+        raise ValueError('长片输入仅适用于显式exec_pitch预设')
     if provider not in ("codex_cli", "claude_cli"):
         raise ValueError("不支持的视频规划器")
     if provider == "claude_cli" and spec["generation_contract"] != STORY_CONTRACT:

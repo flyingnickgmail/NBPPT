@@ -19,8 +19,11 @@ from test_security_delivery import manager, KEY_A, KEY_B, balance
 from test_video_generation import SOURCE, plan
 
 
-@pytest.mark.parametrize('with_voice', [True, False])
-@pytest.mark.skipif(not os.environ.get('NBPPT_KOKORO_MODEL_DIR'), reason='optional voice integration runtime required')
+@pytest.mark.parametrize('with_voice', [
+    pytest.param(True, marks=pytest.mark.skipif(not os.environ.get('NBPPT_KOKORO_MODEL_DIR'),
+                                             reason='optional voice integration runtime required')),
+    False,
+])
 def test_real_media_failure_refund_retry_download_and_voice(manager, monkeypatch, tmp_path, with_voice):
     monkeypatch.setenv('NBPPT_KOKORO_ENABLED', 'true')
     monkeypatch.setattr(worker_api, 'WORKSPACE_JOBS_DIR', manager.jobs_root)

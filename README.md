@@ -1,5 +1,7 @@
 # NBPPT — 三阶段智能体纯图片 PPT 与动效视频直出平台
 
+视频现行入口、预设、音色与边界统一见 [当前视频能力](docs/VIDEO_CAPABILITIES.md)；本地测试及自动门禁见 [开发验证](docs/DEVELOPMENT_CHECKS.md)。本文及实现文档中的日期记录不替代运行时能力和验收回执。
+
 ## 当前 PPT 默认链路（2026-10 修复）
 
 `task_type=ppt` 且 `execution_mode=auto/codex_cli` 时，完整原文直接交给

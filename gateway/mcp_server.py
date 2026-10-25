@@ -6,7 +6,7 @@ import re
 import os
 from urllib.parse import urlparse
 from mcp.server.transport_security import TransportSecuritySettings
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from mcp.server.mcpserver import Context, MCPServer
@@ -76,28 +76,56 @@ class PresentationJobs:
     async def create(self, principal, source, template_id, slide_count, request_id,
                      task_type='ppt', video_duration_sec=30, video_aspect_ratio='16:9',
                      video_voice='melo', video_narration=True, video_subtitles=True,
-                     execution_mode='auto', video_visual_mode='motion'):
+                     execution_mode='auto', video_visual_mode='motion', video_preset='legacy', video_input_id='', video_render_engine='auto', video_voice_rate='-6%'):
         self._require_scope(principal, write=True)
         if task_type not in ('ppt', 'video'):
             raise ValueError('PPT和视频须分别创建任务，以便独立结算和重试')
+        if video_preset not in ('legacy','short','exec_pitch') or (task_type!='video' and video_preset!='legacy'):
+            raise ValueError('视频预设无效')
+        executive=video_preset=='exec_pitch'
+        if (video_render_engine not in ('auto','html_chromium','registered_video')
+                or not executive and video_render_engine!='auto'):
+            raise ValueError('HTML动态渲染只适用于显式exec_pitch；不更换旧短片和实景管线')
+        if executive and execution_mode!='auto':
+            raise ValueError('exec_pitch使用已登记输入，请选择auto；本阶段不重新调用规划或配音服务')
+        if not executive and video_input_id:
+            raise ValueError('内容包仅适用于exec_pitch')
         if task_type == 'video' and execution_mode not in ('auto', 'codex_cli', 'claude_cli'):
             raise ValueError('视频只支持 Codex 动画或 Claude 内容故事模式')
         engine = resolve_ppt_engine(execution_mode) if task_type == 'ppt' else ('claude_cli' if execution_mode == 'claude_cli' else 'codex_cli')
+        if executive: engine='approved_data'
         if engine in ('claude_cli', 'claude_codex'):
             await self.require_claude_access(principal)
         if task_type == 'video':
-            if video_visual_mode not in ('motion','live_action') or (video_visual_mode=='live_action' and engine!='claude_cli'):
+            if not executive and (video_visual_mode not in ('motion','live_action') or (video_visual_mode=='live_action' and engine!='claude_cli')):
                 raise ValueError('实景内容模式需Claude；画面模式无效')
             from gateway.video_contract import VIDEO_VOICES
+            from gateway.video_contract import validate_voice_rate
+            validate_voice_rate(video_voice,video_voice_rate)
             if video_voice not in VIDEO_VOICES or type(video_narration) is not bool or type(video_subtitles) is not bool:
                 raise ValueError('视频音色或配音、字幕开关无效')
+            if (video_voice=='approved_local') != executive:
+                raise ValueError('已登记本地配音仅适用于exec_pitch')
             if video_narration and video_voice.startswith('microsoft_') and os.getenv('NBPPT_MICROSOFT_EDGE_ENABLED', 'false').lower() != 'true':
                 raise ValueError('服务器未启用微软在线配音')
             if video_narration and video_voice.startswith('kokoro_') and os.getenv('NBPPT_KOKORO_ENABLED', 'false').lower() != 'true':
                 raise ValueError('服务器尚未启用 Kokoro 可选音色，请选择默认中文配音')
-        if task_type == 'video' and (type(video_duration_sec) is not int or not 6 <= video_duration_sec <= (180 if engine=='claude_cli' else 60)
+        maximum=600 if executive else (180 if engine=='claude_cli' and video_preset!='short' else 60)
+        if task_type == 'video' and (type(video_duration_sec) is not int or not 6 <= video_duration_sec <= maximum
                                      or video_aspect_ratio not in ('16:9', '9:16')):
-            raise ValueError('视频时长须为6–180秒整数，超过60秒需Claude，画幅须为16:9或9:16')
+            raise ValueError(f'当前视频预设时长须为6至{maximum}秒整数，画幅须为16:9或9:16；legacy超过60秒需Claude')
+        if executive:
+            from gateway.exec_pitch_inputs import load_input
+            from gateway.video_contract import validate_video_spec
+            admission_spec={'generation_contract':'exec-pitch-v1','planner_provider':'approved_data',
+                'video_preset':video_preset,'video_input_id':video_input_id,
+                'video_input_owner':hashlib.sha256(principal['user_id'].encode()).hexdigest(),
+                'original_prompt_cn':source,'video_duration_sec':video_duration_sec,'video_aspect_ratio':video_aspect_ratio,
+                'video_voice':video_voice,'video_narration':video_narration,'video_subtitles':video_subtitles,
+                'video_visual_mode':video_visual_mode}
+            admission_spec['video_render_engine']='html_chromium' if video_render_engine=='auto' else video_render_engine
+            validate_video_spec(admission_spec)
+            await asyncio.to_thread(load_input,admission_spec['video_input_owner'],video_input_id,admission_spec)
         if not source.strip() or len(source) > 100000 or not 0 <= slide_count <= 60:
             raise ValueError("原文不能为空且最多10万字；页数须为0（自动）或1–60")
         if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
@@ -112,7 +140,15 @@ class PresentationJobs:
                              video_aspect_ratio=video_aspect_ratio, video_voice=video_voice,
                              video_narration=video_narration, video_subtitles=video_subtitles)
             if video_visual_mode!='motion': arguments['video_visual_mode']=video_visual_mode
+            if video_voice_rate!='-6%':arguments['video_voice_rate']=video_voice_rate
+            if video_preset!='legacy': arguments['video_preset']=video_preset
+            if executive: arguments['video_input_id']=video_input_id
+            if executive:arguments['video_render_engine']='html_chromium' if video_render_engine=='auto' else video_render_engine
         fingerprint_args = dict(arguments)
+        if executive and video_render_engine=='auto':
+            # Keep old default-request identities, while persisting the resolved
+            # engine so a new failed job cannot change renderers on retry.
+            fingerprint_args.pop('video_render_engine',None)
         for key, default in (('video_voice', 'melo'), ('video_narration', True), ('video_subtitles', True)):
             if fingerprint_args.get(key) == default:
                 fingerprint_args.pop(key, None)
@@ -138,6 +174,8 @@ class PresentationJobs:
                     await self.billing.save_compiled_spec(job_id, {"_request": arguments})
                     self.progress[job_id] = {"percent": 0, "stage": "queued", "message": "已接收，等待生成"}
                     execution = {**arguments, 'account_owner_user_id': claude_runtime_owner()} if engine in ('claude_cli', 'claude_codex') else arguments
+                    if executive:
+                        execution={**arguments,'video_input_owner':admission_spec['video_input_owner']}
                     self.track(self.execute(job_id, execution))
                     handed_off = True
                     return {"job_id": job_id, "status": "RUNNING", "poll_after_seconds": 30,
@@ -154,7 +192,7 @@ class PresentationJobs:
         return await asyncio.shield(self.track(admit()))
 
     async def execute(self, job_id, arguments):
-        spec = {'_request': {k:v for k,v in arguments.items() if k != 'account_owner_user_id'}}
+        spec = {'_request': {k:v for k,v in arguments.items() if k not in ('account_owner_user_id','video_input_owner')}}
         try:
             task_type = arguments.get('task_type', 'ppt')
             self.progress[job_id] = {"percent": 10, "stage": "planning", "message": "正在规划内容与逐页结构"}
@@ -168,6 +206,14 @@ class PresentationJobs:
                         'video_voice': arguments.get('video_voice', 'melo'),
                         'video_subtitles': arguments.get('video_subtitles', True),
                         'matched_template': match_template_for_prompt(arguments['source'], arguments['template_id'])}
+                if arguments.get('video_preset'):
+                    spec['video_preset']=arguments['video_preset']
+                if arguments.get('video_voice_rate'):
+                    spec['video_voice_rate']=arguments['video_voice_rate']
+                if arguments.get('video_preset')=='exec_pitch':
+                    spec.update(generation_contract='exec-pitch-v1',planner_provider='approved_data',
+                        video_input_id=arguments['video_input_id'],video_input_owner=arguments['video_input_owner'],
+                        video_render_engine=arguments.get('video_render_engine','html_chromium'))
             else:
                 spec = await compile_cn_request_to_english_spec(arguments['source'], 'ppt',
                     {"slide_count": arguments['slide_count'], "template_id": arguments['template_id'], "execution_mode": arguments.get('execution_mode', 'codex_cli')})
@@ -176,15 +222,16 @@ class PresentationJobs:
                     spec['account_owner_user_id'] = arguments['account_owner_user_id']
             if task_type == 'video' and arguments.get('execution_mode') == 'claude_cli':
                 spec['account_owner_user_id'] = arguments['account_owner_user_id']
-            spec['_request'] = {k: v for k, v in arguments.items() if k != 'account_owner_user_id'}
+            spec['_request'] = {k: v for k, v in arguments.items() if k not in ('account_owner_user_id','video_input_owner')}
             await self.billing.save_compiled_spec(job_id, spec)
             self.progress[job_id] = {"percent": 10, "stage": "planning", "message": "正在准备视频分镜"} if task_type == 'video' else {"percent": 25, "stage": "generating", "message": "内容规划完成，正在生成页面"}
             completed = None
-            async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=15), trust_env=False) as client:
+            executive=spec.get('video_preset')=='exec_pitch'
+            async with asyncio.timeout(21600), httpx.AsyncClient(timeout=httpx.Timeout(60 if executive else 600, connect=15), trust_env=False) as client:
                 async with client.stream('POST', runtime['overseas_worker_url'] + '/internal/execute-stream',
                     headers={'X-Worker-Secret': runtime['overseas_worker_secret']},
                     json={'job_id': job_id, 'task_type': task_type, 'english_spec': spec,
-                          'execution_mode': arguments.get('execution_mode', 'codex_cli'), 'max_budget_usd': min(3.0, max(.85, arguments.get('video_duration_sec',30)*.015)),
+                          'execution_mode': 'approved_data' if executive else arguments.get('execution_mode', 'codex_cli'), 'max_budget_usd': 0.0 if executive else min(3.0, max(.85, arguments.get('video_duration_sec',30)*.015)),
                           'runtime_keys': {'account_safe_proxy': runtime.get('account_safe_proxy', '')}}) as response:
                     response.raise_for_status()
                     async for line in response.aiter_lines():
@@ -209,26 +256,35 @@ class PresentationJobs:
             if task_type == 'video':
                 actual_spec = completed.get('compiled_spec', {})
                 # Bind completion to the admitted source/options before independent file QA/settlement.
-                for key in ('generation_contract', 'original_prompt_cn', 'video_duration_sec', 'video_aspect_ratio', 'planner_provider', 'video_narration', 'video_voice', 'video_subtitles', 'matched_template', 'video_visual_mode'):
+                for key in ('generation_contract', 'original_prompt_cn', 'video_duration_sec', 'video_aspect_ratio', 'planner_provider', 'video_narration', 'video_voice', 'video_voice_rate', 'video_subtitles', 'matched_template', 'video_visual_mode', 'video_preset', 'video_input_id','video_input_owner','video_render_engine'):
                     if actual_spec.get(key) != spec.get(key):
                         raise ValueError('Video completion does not match the admitted request')
                 if not actual_spec.get('video_scenes'):
                     raise ValueError('Video completion lacks validated storyboard')
-                from gateway.video_contract import validate_video_plan
-                raw_plan = {'task_summary_cn': actual_spec.get('task_summary_cn'), 'scenes': actual_spec['video_scenes']}
-                if spec['generation_contract'] == 'story-video-v2':
-                    raw_plan['story'] = actual_spec.get('story')
-                    from gateway.video_manuscript import validate_handoff
-                    validate_handoff(actual_spec.get('video_manuscript'),raw_plan,spec)
-                validated = validate_video_plan(raw_plan, spec)
-                if validated != actual_spec['video_scenes']:
-                    raise ValueError('Video completion contains unnormalised storyboard')
+                if executive:
+                    from gateway.exec_pitch_inputs import load_input
+                    value,timeline,_=await asyncio.to_thread(load_input,spec['video_input_owner'],spec['video_input_id'],spec)
+                    if (actual_spec.get('exec_pitch_input')!=value or actual_spec.get('exec_pitch_timeline')!=timeline
+                            or actual_spec['video_scenes']!=value['shots'] or actual_spec.get('video_sections')!=value['sections']
+                            or completed.get('total_cost_usd')!=0 or completed.get('used_real_claude_cli')
+                            or completed.get('used_real_codex_cli')):
+                        raise ValueError('长片完成事件与已登记输入或零服务商调用约定不一致')
+                else:
+                    from gateway.video_contract import validate_video_plan
+                    raw_plan = {'task_summary_cn': actual_spec.get('task_summary_cn'), 'scenes': actual_spec['video_scenes']}
+                    if spec['generation_contract'] == 'story-video-v2':
+                        raw_plan['story'] = actual_spec.get('story')
+                        from gateway.video_manuscript import validate_handoff
+                        validate_handoff(actual_spec.get('video_manuscript'),raw_plan,spec)
+                    validated = validate_video_plan(raw_plan, spec)
+                    if validated != actual_spec['video_scenes']:
+                        raise ValueError('Video completion contains unnormalised storyboard')
             else:
                 actual_spec = validate_direct_completion(completed, spec)
                 if actual_spec.get('generator_engine', 'codex_cli') != arguments.get('execution_mode', 'codex_cli'):
                     raise ValueError('PPT completion does not match the admitted provider')
                 actual_spec['requested_slide_count'] = arguments['slide_count']
-            actual_spec['_request'] = {k: v for k, v in arguments.items() if k != 'account_owner_user_id'}
+            actual_spec['_request'] = {k: v for k, v in arguments.items() if k not in ('account_owner_user_id','video_input_owner')}
             await self.billing.save_compiled_spec(job_id, actual_spec)
             await self.billing.confirm_settle(job_id, float(completed['total_cost_usd']), completed.get('cdn_urls', {}))
         except asyncio.CancelledError:
@@ -289,7 +345,8 @@ class PresentationJobs:
         if job['status'] != 'FAILED':
             raise ValueError('只有失败且已退款的任务可以重试')
         try:
-            arguments = json.loads(job['en_compiled_spec'] or '{}')['_request']
+            saved = json.loads(job['en_compiled_spec'] or '{}')
+            arguments = saved['_request']
         except (KeyError, TypeError, json.JSONDecodeError):
             raise ValueError('旧任务缺少可重试的原始参数，请重新创建任务')
         retry_job_id = job['task_type'] + "_" + hashlib.sha256((principal['user_id'] + ':' + request_id).encode()).hexdigest()[:10]
@@ -300,9 +357,13 @@ class PresentationJobs:
                                  video_duration_sec=arguments.get('video_duration_sec', 30),
                                  video_aspect_ratio=arguments.get('video_aspect_ratio', '16:9'),
                                  video_voice=arguments.get('video_voice', 'melo'),
+                                 video_voice_rate=arguments.get('video_voice_rate','-6%'),
                                  video_narration=arguments.get('video_narration', True),
                                  video_subtitles=arguments.get('video_subtitles', True),
-                                 execution_mode=arguments.get('execution_mode', 'auto'), video_visual_mode=arguments.get('video_visual_mode','motion'))
+                                 execution_mode=arguments.get('execution_mode', 'auto'), video_visual_mode=arguments.get('video_visual_mode','motion'),
+                                 video_preset=arguments.get('video_preset','legacy'),video_input_id=arguments.get('video_input_id',''),
+                                 video_render_engine=arguments.get('video_render_engine',
+                                     saved.get('video_render_engine','registered_video' if arguments.get('video_preset')=='exec_pitch' else 'auto')))
 
     async def artifacts(self, principal, job_id):
         job = await self.owned_job(principal, job_id)
@@ -356,12 +417,16 @@ def build_mcp(jobs):
     async def create_video(ctx: Context,
         source: Annotated[str, Field(min_length=1, max_length=100000)],
         request_id: Annotated[str, Field(pattern=r'^[A-Za-z0-9_-]{8,80}$')],
-        template_id: str = 'auto', duration_seconds: Annotated[int, Field(ge=6, le=180)] = 30,
+        template_id: str = 'auto', duration_seconds: Annotated[int, Field(ge=6, le=600, strict=True)] = 30,
         aspect_ratio: str = '16:9', voice: str = 'melo', narration: bool = True,
-        subtitles: bool = True, execution_mode: str = 'auto', visual_mode: str = 'motion') -> dict:
-        """原文生成视频。execution_mode=claude_cli 先写逻辑和口播再生成故事动画，需当前key的Claude权限；auto保留Codex动画。visual_mode=live_action 使用受审实景剪辑。Claude支持6–180秒，其他模式6–60秒，独立计费与重试，提供文字稿、口播和分镜下载。"""
+        subtitles: bool = True, execution_mode: str = 'auto', visual_mode: str = 'motion',
+        preset: Literal['legacy','short','exec_pitch'] = 'legacy', input_id: Annotated[str,Field(max_length=64)] = '',
+        render_engine: Literal['auto','html_chromium','registered_video'] = 'auto',
+        voice_rate: Literal['-6%','+0%','+10%'] = '-6%') -> dict:
+        """原文生成视频。legacy保留Codex 6–60秒与Claude 6–180秒；short最多60秒。preset=exec_pitch支持6–600秒，须execution_mode=auto、voice=approved_local、visual_mode=registered_local及当前账户登记的input_id，不调用规划/配音服务；八分钟至少40镜，最多240镜/30口播段。Claude需当前key授权。独立计费、退款与新任务重试；文件通过仍需人工内容审阅。"""
         return await jobs.create(principal(ctx), source, template_id, 0, request_id,
-                                 'video', duration_seconds, aspect_ratio, voice, narration, subtitles, execution_mode=execution_mode, video_visual_mode=visual_mode)
+                                 'video', duration_seconds, aspect_ratio, voice, narration, subtitles, execution_mode=execution_mode, video_visual_mode=visual_mode,
+                                 video_preset=preset,video_input_id=input_id,video_render_engine=render_engine,video_voice_rate=voice_rate)
 
     @server.tool()
     async def retry_job(ctx: Context, job_id: str,

@@ -1,6 +1,12 @@
 # 内容优先的视频制作
 
-本文描述基于代码基线 `edd11b4`、在工作分支 `codex/voice-video-story` 实现并本地验收的视频能力，不代表已推送或部署到生产环境。服务器依赖、资源容量及在线客户端验收仍需另行完成。
+> **入口与现行参数**统一见 [当前视频能力](VIDEO_CAPABILITIES.md)。本页保留实现细节及 P0–P6 的分阶段记录；带日期的测试结果、旧限制和候选说明属于对应版本，不应当作当前运行能力。
+
+P6本地补充（2026-10-23）：先形成“问题—机制—来源支持的证据—收束”的因果简报，再为既有20段中文干声编排同一包裹的查证动作；配音、时钟与安全门槛不变。机制演绎和建议验证均不充当实测客户成效，客户素材/授权及最终审核、韩语译审缺口保留。详见 [P6叙事实现与边界](EXEC_PITCH_STORY.md)。下方P5记录保留为历史。
+
+P5本地补充（2026-10-23）：已接入客户规则版本、最终画面审核回执和单镜修订；P4原始5处零长和1处重叠经真实离线复核消除，保留原始记录和全部复核证据。原B版配音不变，客户规则及素材、品牌授权、韩语审批仍缺，交付继续阻断。详见 [P5实现与边界](EXEC_PITCH_REVISIONS.md) 和 [P4原始记录](EXEC_PITCH_SYNC.md)。
+
+本文描述工作分支 `codex/voice-video-story` 上基于 `51ba24c06f267a6a84dd4f3092f919fc31c7b5f4` 的本地实现及P0长片候选，不代表已推送或部署。现有短片、Claude（内容规划）和实景路径保留，长片的受控输入路径见下方。服务器容量、在线客户端验收及人工内容审阅仍需另行完成。总体资源、成本与历史实验见 [视频制作体系](VIDEO_PRODUCTION.md)。
 
 ## 产品链路
 
@@ -47,14 +53,14 @@ HTTP：`POST /api/jobs`，`task_type=video`、`execution_mode=claude_cli`。MCP 
 | 实景素材与镜头剪辑 | 已接入已审素材库或公开搜索，校验来源、许可、审核范围和剪辑时间窗；素材不足时失败，不以动态PPT替代 |
 | 配乐与人声期间压低底乐 | 实景配音片已接入本项目合成的轻量器乐底乐，按实际语音能量压低；最终混音重新验收响度 |
 | 即梦、外部付费音乐与独立音效 | 未接入或启用，不代表已支持附件中的付费媒体工具 |
-| 三分钟长片 | Claude 支持至180秒；实景每镜2–6秒、口播段不超过18秒；更长影片未开放 |
+| 长片预设 | legacy保留Claude至180秒；P0 exec_pitch从已登记本地数据支持至600秒，八分钟至少40镜；不自动扩展Claude付费规划或在线声音 |
 | 另一环境的 jobctl / Notion / Grok 发布规则 | 不迁移为本仓库操作权限或运行依赖 |
 
 适配技能：`worker/skills/exec-pitch-video/SKILL.md`。附件原文仅作为参考，制作流程已按本项目安全与计费边界重新实现；未批量安装备案中的所有上游工具。
 
 ## 复现实验
 
-先运行 `python -m pytest -q -ra` 和 `node --test tests/*.cjs`。2026-10-23 的本地回归为后端359项通过、6项跳过，前端45项通过。跳过项需要未配置的可选 MeloTTS/Kokoro 离线模型，不计为通过；本轮回归未重新请求外部模型、语音或素材服务。
+先运行 `python -m pytest -q -ra` 和 `node --test tests/*.cjs`。2026-10-23、P0之前的基线回归为后端359项通过、6项跳过，前端45项通过。跳过项需要未配置的可选 MeloTTS/Kokoro 离线模型，不计为通过；该基线回归未重新请求外部模型、语音或素材服务。P0新增路径的当前运行结果以独立沙盒 `video_v1/REPORT.md` 与测试日志为准，不用旧基线数字代替。
 
 同次检查用当前交付校验器复检既有180秒实景成片及10份交付文件，文件摘要、完整解码、稿件、音轨与素材来源检查通过；两份微软试听也通过声音门槛。文件状态通过不等于内容或审美获认可，内容状态仍为 `NOT_REVIEWED`（待人工审阅）。
 
@@ -67,6 +73,84 @@ HTTP：`POST /api/jobs`，`task_type=video`、`execution_mode=claude_cli`。MCP 
 - `VIDEO_SKILLS_REGISTRY_20261013.md`：SHA-256 `3696d99f1a0a8ee052f32976484129d50324e414c501d78b5d57b34f62f00608`
 - `bot-ops-rules_SKILL.md`：SHA-256 `4aaea8bf6be90ac1d47a459d1dc52bacd1cdfa9ef09407b93c88ea84e2e9de1c`
 - `exec-pitch-video_SKILL.md`：SHA-256 `c65912867b0ecfcaa1c9d47f16c7dedb3be5c40b9c966c5ad1e752ecfca9d407`
+
+## P0 长片登记与复现
+
+P2补充：内容包可引用账户隔离、由可信操作者登记的产品截图、品牌静帧/实景与标志。必须绑定人工审批、权属依据、客户/项目/品牌/用途和有效期；详见[已审产品素材契约](PRODUCT_VISUALS.md)。产品截图和受品牌限制的实景缺失时拒绝生成；无新费用调用或素材搜索回退。现有P0/P1音轨、时长、源文和交付门槛继续保留。
+
+P3补充：云健、明确合成语速、登记长片专用更严混音与已审中韩字幕入口见[声音与双语契约](EXEC_PITCH_VOICE.md)。真实创作表单可选新中文音色和语速；长片仍读取登记音轨，不能从表单替换。需要先同稿试听并人工选声，才生成全片。中韩映射缺译审或字体时拒绝，合成测试不等于真实韩语或客户验收。
+
+2026-10-23执行补充：用户已选B（云健合成时提速10%）。此前131秒私有审阅片及真实422拒绝记录保留为历史。核查基线代码及交接后，已纠正把合成前“每秒4字”规划预算用于实测录音入场的误用；原短片规划预算保留。`tools/exec_pitch_cn_acceptance.py` 复用同批完整干声，经正式应用链路生成中文完整样片，没有合成或规划调用路径。实测样本、声音留量、总帧数、独立节拍比对、响度与真峰值门槛保留，详见 [声音与混音](EXEC_PITCH_VOICE.md)。韩语译审批准仍缺失，不生成或伪称已审韩语成片。
+
+P1补充：新 `exec_pitch` 请求现在默认使用HTML/Chromium（网页/浏览器）分块动态镜头；本节保留P0输入及兼容边界。原登记视频剪辑可显式设置 `video_render_engine=registered_video`，新HTML任务为 `html_chromium`；旧P0产物无需补造HTML交付记录。新的登记镜头可加 `motion`，严格形式如下：
+
+```json
+{"layout":"architecture","headline":"把分散的记录放在一起","labels":["扫码记录","库位变更","交接备注"],"focus":0}
+```
+
+`layout` 只允许 `title|comparison|process|architecture|task_hub|timeline|crm_frame|broll_plate|closing`。标题最多28字、对象标签2–4个且每个最多12字，并检查实际像素容量和来源数字。没有 `motion` 的旧输入默认使用HTML实景衬板，不擅自生成画面论断；也可选择原登记视频剪辑器。模型和客户都不能提交HTML、JS、CSS、Lottie动画JSON或其他可执行内容。
+
+`video_preset=legacy` 是默认兼容预设，`short` 显式限制60秒，`exec_pitch`（高管汇报长片模式）支持6–600秒。P0长片读取已登记数据，运行时不重新调用Claude、在线配音、素材搜索或生成媒体。普通文字中的“已批准”不能启用文件访问或花费；登记目录是可信操作者的配置，必须独立核对输入权限，不从文件名推定授权。登记输入获准使用与最终内容获人工认可分别记录。
+
+网关与Worker配置同一只读 `NBPPT_EXEC_PITCH_ROOT`；目录下是 `sha256(user_id)/input_id/input.json` 和 `assets/<sha256>.wav|mp4`。`input_id` 是完整JSON经 `gateway.exec_pitch_contract.canonical` 规范化后的SHA-256（内容摘要）。当前没有面向客户的上传/审批界面，内容包由可信操作者准备；未配置目录时不能提交长片。沙盒工具只为自己的随机账户登记合成测试内容，不能用作客户素材审批。
+
+JSON严格包含：`title`、`audience`、`purpose`、`thesis`、`causal_chain`、`evidence_boundary`、`source_sha256`、`media_kind`、`sections`、`shots`。`media_kind=synthetic_fixture|approved_local` 明确区分测试媒体与登记的真实本地媒体。`sections`最多30段，每段有连续 `section_num`、`argument`、`narration`、`source_quotes`；保持因果论证、来源数字与承诺边界。`shots`最多240镜，每镜有：
+
+```json
+{"shot_num":1,"section_num":1,"narration":"与该段口播逐字对应的完整节拍。",
+ "source_quotes":["必须存在于原文的引用"],"reason":"画面怎样支持这一节拍",
+ "audio_sha256":"音频文件的64位小写摘要","visual_sha256":"镜头文件的64位小写摘要",
+ "audio_samples":348000,"lead_frames":6,"tail_frames":12}
+```
+
+上例只是字段说明，示意摘要不可提交。声音必须是48kHz（每秒采样48000次）单声道16位PCM WAV（未压缩声音文件）。网关冻结前与Worker分别检查真实音频样本数量、文件摘要、段落与镜头文字对应、原文和数字。每镜2–20秒，声音留量各6–12帧；声音长度向上取整到24帧时钟，不足一帧的余量明确留在尾部。总帧数必须正好等于请求秒数乘24，不能靠追加空白、拉伸、加速、截断或循环素材凑够时长。登记画面必须已经按真实交付画幅检查，编码器仍拒绝时长不足或尺寸不同的素材。
+
+最终AAC（压缩音轨）必须为48kHz，交付校验按每镜预期的样本位置与登记音频比较，归一化波形相关度至少0.90；故意延迟半秒的音轨会拒绝。该机制只检查已登记声音的复用与节拍位置，不是语音识别或逐字对齐，不能证明声音确实读出了字幕。因此可信登记包须保留供独立结算与下载复检。
+
+HTTP（网页同用）请求示例：
+
+```json
+{"source":"完整且与内容包摘要一致的原文","request_id":"exec-pitch-review-001",
+ "task_type":"video","execution_mode":"auto","video_preset":"exec_pitch",
+ "video_duration_sec":480,"video_aspect_ratio":"16:9","video_voice":"approved_local",
+ "video_narration":true,"video_subtitles":true,"video_visual_mode":"registered_local",
+ "video_input_id":"当前账户已登记内容包的64位摘要"}
+```
+
+MCP `create_video`对应 `preset=exec_pitch`、`duration_seconds=480`、`voice=approved_local`、`visual_mode=registered_local`、`input_id=...`，其余同源。网页在真实创作表单的「视频预设」选择长片后填写编号；不会把被禁用的Claude选项偷偷用于长片。原请求参数保存在任务中并参与请求身份；失败后退款，新任务重试保留预设、编号、时长和字幕。相同请求编号改变输入会拒绝，跨账户包无法读取。
+
+离线复现命令（使用已配置项目Python环境）：
+
+```sh
+python tools/exec_pitch_acceptance.py --root workspace/exec-pitch-p0-<全新运行名>
+python -m pytest -q -ra
+node --test tests/*.cjs
+```
+
+第一条命令创建全新沙盒目录与数据库、随机测试凭据，在系统分配的空闲环回端口启动独立临时Worker，用真实HTTP网关创建480秒/40镜任务并验证重复提交、文件交付、下载摘要、未登录拒绝、跨账户拒绝和Range（分段下载）。不读取生产钱包、不使用账号登录信息、不调用外部模型或配音，结束时只关闭本次临时进程。旧目录不能覆盖；`video_v1/`保存MP4、稿件、`timeline.json`、`source_manifest.json`、`facts.json`和`REPORT.md`。上级数据库含随机沙盒凭据，请勿对外分享。
+
+## P1 动态引擎配置与复现
+
+在执行进程的可信环境中设置：`NBPPT_HTML_NODE` 为Node（脚本运行时）绝对路径；`NBPPT_PLAYWRIGHT_MODULE` 可指定已固定的Playwright 1.62.1包目录，默认查找 `worker/html_motion/node_modules/playwright`。依赖的准确来源与摘要在同目录 `package-lock.json`；操作者可用锁文件准备环境，生成任务本身不安装依赖。
+
+`NBPPT_CHROMIUM_BIN`、`NBPPT_CHROMIUM_VERSION`、`NBPPT_CHROMIUM_SHA256` 指定已检查的浏览器二进制、确切版本和摘要；`NBPPT_HTML_FONT`、`NBPPT_HTML_FONT_SHA256` 指定受信本地中文字体及摘要。版本或字节改变时明确失败，需要重新核查配置，不自动接受升级，也不尝试关闭沙箱。字体必须在绘制前完整加载，且运行时文件最大64MiB。浏览器使用自己的任务配置目录，绝不使用日常账户的浏览器目录。
+
+本机验收复用已有Chrome（基于Chromium的浏览器）156.0.8078.47和已捆绑的Playwright，中文字体从Google Fonts（开源字体项目）的Noto Sans SC（思源黑体）原始仓库取得并记录OFL（开放字体许可）和摘要。Lottie 5.13.0已随引擎固定；不执行花叔或其他来源的示例脚本，不采用运行时远程字体、媒体、网页脚本或动画JSON。
+
+```sh
+python tools/html_motion_acceptance.py \
+  --root workspace/exec-pitch-p1-<全新运行名> \
+  --runtime <已检查的本地运行配置JSON> \
+  --cached-job <已有授权原稿及成片的任务目录>
+```
+
+运行配置JSON的键仅为上面的可信环境变量，包含路径与公开摘要，不含凭据。验收脚本保留原因果稿、完整口播和证据边界，复用既有成片中完整、已计时的段落音轨（包括原停顿与配乐），不为了满足文字密度而加速、拉伸或添加空白。每段的源文件摘要、原始时间窗及重采样后摘要写入 `cached-audio-provenance.json`。画面由平台代码新绘制；这不是新声音或客户产品截图验收。
+
+请求沿用P0接口，`video_render_engine=auto`默认解析为HTML并保存；MCP对应 `render_engine`，网页真实创作表单也可选择兼容剪辑器。数据输入、渲染引擎和新任务重试均受同一账户与请求身份约束。新增 `render_chunks.json` 可经原鉴权下载，包含实际浏览器版本/摘要、字体和模板摘要、每块及首尾帧证据；不把浏览器配置目录或日志提供给客户端。
+
+P1沙盒输出位于新的 `video_v2/`，保留所有P0产物和失败试验。复核最终编码的切点画面后，还需实际播放并检查时间推进、跳转、解码状态与运动表现。播放和文件检查仍不等于客户内容审批。P2素材入口已实现，真实客户素材验收未完成；P3声音工程已接入但人工选声及真实双语验收待完成，后续逐字同步和完整客户规则门槛未交付。
+
+样片使用40个不同长度的合成测试音调及运动测试图形，字幕是基于现有链路的工程排练稿；它证明音频节拍如何驱动剪辑，不证明配音与字幕语义一致或逐字同步。P0无需购买声音或品牌素材。自动声音门槛仍沿用旧标准，P3才收紧；不因文件通过就宣称达到长城DMS或北京现代参考片的内容、声音、品牌和电影质量。所有草稿保持 `NOT_REVIEWED`（待人工审阅）。
 
 ## 实景故事模式
 

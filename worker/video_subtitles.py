@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -139,8 +140,15 @@ def _caption_chunks(text: str, width: int, height: int) -> list[str]:
     chunks: list[str] = []
     for offset in range(0, len(characters), capacity):
         group = characters[offset:offset + capacity]
-        first = "".join(group[:per_line])
-        second = "".join(group[per_line:])
+        # Balance a short overflow rather than strand the last full stop on
+        # its own line. Capacity, characters and cue times remain unchanged.
+        split_at = per_line if len(group) <= per_line else (len(group)+1)//2
+        # Chinese closing punctuation belongs with the preceding character.
+        if (split_at < len(group) and len(group)-split_at < per_line
+                and group[split_at] in '，。；：、！？,.!?;:）】》」』'):
+            split_at -= 1
+        first = "".join(group[:split_at])
+        second = "".join(group[split_at:])
         chunks.append(first + ("\n" + second if second else ""))
     return chunks
 
@@ -192,6 +200,12 @@ def _prepare_burn_vtt(source: Path, destination: Path, width: int, height: int) 
         for index, chunk in enumerate(chunks):
             chunk_start = start + round(duration * index / len(chunks))
             chunk_end = start + round(duration * (index + 1) / len(chunks))
+            # libass uses centiseconds. Rounding a 24Hz cut (e.g. 9.541667s)
+            # up to 9.542s keeps the old cue on that cut's first video frame.
+            # Quantize the temporary burn cues down; the downloadable source
+            # VTT and its frame-derived evidence remain unchanged.
+            chunk_start=chunk_start//10*10
+            chunk_end=chunk_end//10*10
             escaped = html.escape(chunk, quote=False)
             output.extend([f"{_vtt_timestamp(chunk_start)} --> {_vtt_timestamp(chunk_end)}",
                            escaped, ""])
@@ -257,6 +271,14 @@ def burn_subtitles(video: Path, subtitles: Path, destination: Path) -> Path:
     ffprobe = _find_ffprobe(ffmpeg)
     source_media = _probe_media(ffprobe, video)
     width, height = _video_dimensions(source_media)
+    try:
+        seconds=float(source_media['format']['duration'])
+        if not math.isfinite(seconds) or not 0 < seconds <= 600.05:
+            raise ValueError('unbounded media')
+    except (KeyError,TypeError,ValueError) as exc:
+        raise SubtitleBurnError('字幕源视频缺少有界时长') from exc
+    encode_timeout=max(300,math.ceil(seconds)*8)
+    decode_timeout=max(300,math.ceil(seconds)*2)
 
     with tempfile.TemporaryDirectory(prefix=".subtitle-burn-", dir=destination.parent) as temp_value:
         work = Path(temp_value)
@@ -278,7 +300,7 @@ def burn_subtitles(video: Path, subtitles: Path, destination: Path) -> Path:
                    candidate.name]
         try:
             result = subprocess.run(command, cwd=work, capture_output=True, text=True,
-                                    timeout=300, check=False)
+                                    timeout=encode_timeout, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
             raise SubtitleBurnError(f"字幕烧录失败：{exc}") from exc
         if result.returncode != 0 or not candidate.is_file() or candidate.stat().st_size == 0:
@@ -288,10 +310,61 @@ def burn_subtitles(video: Path, subtitles: Path, destination: Path) -> Path:
         verify = subprocess.run([str(ffmpeg), "-hide_banner", "-loglevel", "error", "-xerror",
                                  "-nostdin", "-threads", "2", "-i", candidate.name,
                                  "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"],
-                                cwd=work, capture_output=True, text=True, timeout=300, check=False)
+                                cwd=work, capture_output=True, text=True, timeout=decode_timeout, check=False)
         if verify.returncode != 0:
             raise SubtitleBurnError("字幕视频完整解码失败：" + verify.stderr.strip()[-800:])
         os.replace(candidate, destination)
+    return destination
+
+
+def burn_bilingual(video, destination, plan):
+    """Two explicitly aligned language lines; no automatic translation/timing."""
+    if __package__ in (None,''):sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+    from gateway.exec_pitch_inputs import load_input
+    from gateway.exec_pitch_voice import load_bilingual
+    value,timeline,root=load_input(plan['video_input_owner'],plan['video_input_id'],plan)
+    receipt=load_bilingual(value,plan,timeline,root)
+    if receipt is None:raise SubtitleBurnError('缺少已审中韩字幕映射')
+    video=_require_input(video,'源视频');destination=_require_destination(destination)
+    if video.resolve()==destination.resolve():raise SubtitleBurnError('字幕输出不能覆盖输入')
+    ffmpeg=_find_ffmpeg();ffprobe=_find_ffprobe(ffmpeg)
+    width,height=_video_dimensions(_probe_media(ffprobe,video))
+    if (width,height)!=((1280,720) if plan['video_aspect_ratio']=='16:9' else (720,1280)):
+        raise SubtitleBurnError('双语字幕画幅与登记输入不一致')
+    font_size=32 if height>width else 28
+    margin_x=round(width*.06);margin_y=round(height*.06)
+    header=f'''[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+WrapStyle: 2
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{receipt['font_family']},{font_size},&H00FFFFFF,&H00FFFFFF,&H90000000,&H90000000,0,0,0,0,100,100,0,0,3,1,0,2,{margin_x},{margin_x},{margin_y},1
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+'''
+    def stamp(frame):
+        centiseconds=frame*100//24;seconds,cs=divmod(centiseconds,100);minutes,second=divmod(seconds,60);hour,minute=divmod(minutes,60)
+        return f'{hour}:{minute:02}:{second:02}.{cs:02}'
+    events=[f"Dialogue: 0,{stamp(c['start_frame'])},{stamp(c['end_frame'])},Default,,0,0,0,,{c['zh']}\\N{c['ko']}" for c in value['bilingual']['cues']]
+    with tempfile.TemporaryDirectory(prefix='.bilingual-burn-',dir=destination.parent) as temporary:
+        work=Path(temporary);(work/'fonts').mkdir()
+        shutil.copyfile(receipt['font_path'],work/'fonts'/'caption.ttf')
+        # Only fixed host filenames are passed to libass.
+        (work/'captions.ass').write_text(header+'\n'.join(events)+'\n',encoding='utf-8')
+        shutil.copyfile(video,work/'source.mp4')
+        candidate=work/'rendered.mp4'
+        result=subprocess.run([str(ffmpeg),'-v','error','-nostdin','-threads','2','-filter_threads','2',
+            '-i','source.mp4','-vf','subtitles=captions.ass:fontsdir=fonts','-map','0:v:0','-map','0:a?',
+            '-map_metadata','-1','-c:v','libx264','-preset','medium','-crf','20','-threads','2',
+            '-pix_fmt','yuv420p','-c:a','copy','-movflags','+faststart','rendered.mp4'],
+            cwd=work,capture_output=True,text=True,timeout=max(300,plan['video_duration_sec']*8))
+        if result.returncode or not candidate.is_file():raise SubtitleBurnError('中韩字幕烧录失败：'+result.stderr[-800:])
+        _verify_media_equivalence(ffprobe,video,candidate)
+        subprocess.run([str(ffmpeg),'-v','error','-xerror','-nostdin','-threads','2','-i',str(candidate),'-f','null','-'],
+                       check=True,capture_output=True,timeout=max(300,plan['video_duration_sec']*2))
+        os.replace(candidate,destination)
     return destination
 
 
@@ -300,9 +373,13 @@ def main() -> int:
     parser.add_argument("--video", required=True)
     parser.add_argument("--subtitles", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument('--bilingual-plan')
     args = parser.parse_args()
     try:
-        output = burn_subtitles(Path(args.video), Path(args.subtitles), Path(args.output))
+        if args.bilingual_plan:
+            output=burn_bilingual(Path(args.video),Path(args.output),json.loads(_require_input(Path(args.bilingual_plan),'双语计划').read_text()))
+        else:
+            output = burn_subtitles(Path(args.video), Path(args.subtitles), Path(args.output))
         print(json.dumps({"type": "completed", "output": str(output)}, ensure_ascii=False), flush=True)
         return 0
     except Exception as exc:

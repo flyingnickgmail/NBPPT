@@ -18,6 +18,10 @@ jobs:
     name: Python, JavaScript and deployment chain
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.quality-output/browsers
+      NBPPT_HTML_SOCKET_ROOT: /home/nbppt-ci/html-sockets
+      NBPPT_TEST_FIXTURE_RUNNER: /usr/local/bin/nbppt-test-fixture
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,10 +34,28 @@ jobs:
         with:
           node-version: '22'
       - name: Install test and media dependencies
+        timeout-minutes: 8
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig acl
-          python -m pip install -r requirements-dev.txt
+          # The runner's Azure mirror has stalled on large media/font packages.
+          # Use Ubuntu's own archive with bounded retries, never skip packages.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends nginx ffmpeg fonts-noto-cjk fontconfig acl apparmor
+          python -m pip install -r requirements-dev.txt -r requirements-microsoft-voice.txt
+          npm ci --prefix tests/browser --ignore-scripts --no-audit --no-fund
+          tests/browser/node_modules/.bin/playwright install --with-deps chromium
+          # Ubuntu restricts user namespaces for downloaded browsers. Allow
+          # only this exact ephemeral browser path, preserving both Chromium's
+          # sandbox and the host-wide AppArmor restriction.
+          NBPPT_CI_CHROMIUM="$(node -e "process.stdout.write(require('./tests/browser/node_modules/playwright').chromium.executablePath())")"
+          sudo tee /etc/apparmor.d/nbppt-ci-chromium >/dev/null <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile nbppt-ci-chromium "$NBPPT_CI_CHROMIUM" flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /etc/apparmor.d/nbppt-ci-chromium
       - name: Run all existing checks and the TLS proxy acceptance
         env:
           NBPPT_TEST_ROOT: ${{ runner.temp }}/nbppt-checks
@@ -43,15 +65,73 @@ jobs:
           # runner account also owns Actions services; use a dedicated test UID
           # just as production uses a separate non-root execution account.
           sudo useradd --system --create-home --user-group nbppt-ci
+          sudo useradd --system --create-home --user-group nbppt-fixture
+          # Browser threads must not consume the worker UID's RLIMIT_NPROC=32.
+          # Use two non-root UIDs, as real clients and production workers do.
+          NBPPT_FIXTURE_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          sudo tee /usr/local/bin/nbppt-test-fixture-python >/dev/null <<EOF
+          #!/bin/sh
+          export PATH="$PATH"
+          export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+          exec "$NBPPT_FIXTURE_PYTHON" -B "$GITHUB_WORKSPACE/tools/workbench_fixture.py" "\$@"
+          EOF
+          sudo tee /usr/local/bin/nbppt-test-fixture >/dev/null <<'EOF'
+          #!/bin/sh
+          exec /usr/bin/sudo -n -u nbppt-fixture /usr/local/bin/nbppt-test-fixture-python "$@"
+          EOF
+          sudo chmod 755 /usr/local/bin/nbppt-test-fixture /usr/local/bin/nbppt-test-fixture-python
+          echo 'nbppt-ci ALL=(nbppt-fixture) NOPASSWD: /usr/local/bin/nbppt-test-fixture-python' | sudo tee /etc/sudoers.d/nbppt-fixture >/dev/null
+          sudo chmod 440 /etc/sudoers.d/nbppt-fixture
+          sudo visudo -cf /etc/sudoers.d/nbppt-fixture
+          sudo install -d -m 700 -o nbppt-ci -g nbppt-ci "$NBPPT_HTML_SOCKET_ROOT"
           sudo chown -R nbppt-ci:nbppt-ci "$GITHUB_WORKSPACE"
+          # Config imports verify this existing parent even with an isolated DB.
+          # It stays read-only to the fixture UID; fixture data uses its ACL root.
+          sudo install -d -o nbppt-ci -g nbppt-ci "$GITHUB_WORKSPACE/workspace/data"
           sudo install -d -o nbppt-ci -g nbppt-ci "$NBPPT_TEST_ROOT"
           # Hosted runner ancestors are private. Grant only traversal to the
           # two exact working paths, without opening the runner home for listing.
           for NBPPT_CI_PATH in "$GITHUB_WORKSPACE" "$NBPPT_TEST_ROOT"; do
             NBPPT_CI_PARENT="$(dirname "$NBPPT_CI_PATH")"
             while [ "$NBPPT_CI_PARENT" != / ]; do
-              sudo setfacl -m u:nbppt-ci:--x "$NBPPT_CI_PARENT"
+              sudo setfacl -m u:nbppt-ci:--x,u:nbppt-fixture:--x "$NBPPT_CI_PARENT"
               NBPPT_CI_PARENT="$(dirname "$NBPPT_CI_PARENT")"
             done
           done
-          sudo -u nbppt-ci env PATH="$PATH" NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" PYTHONDONTWRITEBYTECODE=1 bash tools/check.sh --deployment
+          sudo -u nbppt-ci env PATH="$PATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" NBPPT_HTML_SOCKET_ROOT="$NBPPT_HTML_SOCKET_ROOT" NBPPT_TEST_FIXTURE_RUNNER="$NBPPT_TEST_FIXTURE_RUNNER" NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" PYTHONDONTWRITEBYTECODE=1 bash tools/check.sh --deployment
+      - name: Stage selected acceptance receipts for the runner
+        if: always()
+        env:
+          NBPPT_TEST_ROOT: ${{ runner.temp }}/nbppt-checks
+        run: |
+          # pytest intentionally creates private directories. Do not broaden
+          # their permissions or have the uploader recursively inspect them.
+          if ! id -u nbppt-ci >/dev/null 2>&1 || [ ! -d "$NBPPT_TEST_ROOT" ]; then
+            echo 'Checks did not start; no acceptance receipts exist.'
+            exit 0
+          fi
+          sudo -u nbppt-ci env NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" GITHUB_WORKSPACE="$GITHUB_WORKSPACE" python -B - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+          root = Path(os.environ['NBPPT_TEST_ROOT'])
+          dest = Path(os.environ['GITHUB_WORKSPACE']) / '.quality-output' / 'receipts'
+          dest.mkdir(parents=True, exist_ok=True)
+          for pattern in ('run-*/gate.json', 'run-*/pytest.xml', 'run-*/*.log', 'run-*/workbench/fixture.log',
+                          'run-*/workbench/receipt.json', 'run-*/workbench/workbench.png'):
+              for source in root.glob(pattern):
+                  target = dest / source.relative_to(root)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copyfile(source, target)
+                  target.chmod(0o644)
+                  if source.name == 'backend.log':
+                      print(source.read_text()[-24000:])
+          PY
+      - name: Preserve the exact gate and product receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: product-acceptance-evidence
+          path: ${{ github.workspace }}/.quality-output/receipts/
+          if-no-files-found: warn
+          retention-days: 14

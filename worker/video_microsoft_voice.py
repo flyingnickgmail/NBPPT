@@ -1,4 +1,7 @@
-"""Opt-in Microsoft Edge voice adapter; explicit provider, no fallback or retry."""
+"""Opt-in Edge adapter; explicit voice/rate, no fallback or application retry.
+
+Pinned edge-tts may internally retry a 403 once after clock-skew adjustment.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +12,9 @@ import shutil
 import subprocess
 from types import SimpleNamespace
 
-VOICES = {"microsoft_yunxi": "zh-CN-YunxiNeural", "microsoft_xiaoxiao": "zh-CN-XiaoxiaoNeural"}
+VOICES = {"microsoft_yunxi": "zh-CN-YunxiNeural", "microsoft_xiaoxiao": "zh-CN-XiaoxiaoNeural",
+          "microsoft_yunjian":"zh-CN-YunjianNeural", "microsoft_injoon":"ko-KR-InJoonNeural"}
+RATES={'-6%','+0%','+10%'}
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 
 
@@ -35,17 +40,18 @@ def preflight_microsoft() -> None:
 
 
 class MicrosoftEngine:
-    def __init__(self, voice: str):
+    def __init__(self, voice: str, rate: str = '-6%'):
         preflight_microsoft()
-        if voice not in VOICES:
-            raise ValueError("微软音色不受支持")
+        if voice not in VOICES or rate not in RATES:
+            raise ValueError("微软音色或合成语速不受支持")
         self.voice = VOICES[voice]
+        self.rate = rate
 
     async def _request(self, text: str) -> bytes:
         import edge_tts
         data = bytearray()
         async with asyncio.timeout(90):
-            async for chunk in edge_tts.Communicate(text, self.voice, rate="-6%",
+            async for chunk in edge_tts.Communicate(text, self.voice, rate=self.rate,
                                                    connect_timeout=15, receive_timeout=30).stream():
                 if chunk["type"] == "audio":
                     data.extend(chunk["data"])
@@ -60,7 +66,7 @@ class MicrosoftEngine:
             audio = asyncio.run(self._request(text))
         except Exception as exc:
             # Exception category helps diagnosis without logging signed URLs or service bodies.
-            raise RuntimeError(f"微软在线配音请求失败（{type(exc).__name__}）；未自动重试或降级，请检查运行时和网络后显式重试任务") from None
+            raise RuntimeError(f"微软在线配音请求失败（{type(exc).__name__}）；未额外重试或更换音色，请检查运行时和网络后显式重试任务") from None
         if not audio:
             raise RuntimeError("微软在线配音返回空音频")
         decoded = subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-nostdin",

@@ -1,0 +1,7 @@
+{
+  "name": "nbppt-workbench-acceptance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline product-route acceptance, not a production model client",
+  "dependencies": { "playwright": "1.62.1" }
+}

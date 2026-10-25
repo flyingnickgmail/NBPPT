@@ -8,9 +8,6 @@ NBPPT_TEST_ROOT="$(cd "$NBPPT_TEST_ROOT" && pwd)"
 for program in python node ffmpeg ffprobe; do
   command -v "$program" >/dev/null || { echo "Required test dependency missing: $program" >&2; exit 1; }
 done
-NBPPT_TEST_RUN="$(mktemp -d "$NBPPT_TEST_ROOT/run.XXXXXX")"
 # Keep numerical-library threads inside the production media subprocess budget.
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
-python -m pytest -q --basetemp "$NBPPT_TEST_RUN/pytest" --junitxml "$NBPPT_TEST_RUN/junit.xml" "$@"
-node --test tests/*.cjs tools/report_studio/tests/*.cjs
-git -c safe.directory="$(pwd)" diff --check
+python -B tools/quality_gate.py --output "$NBPPT_TEST_ROOT" "$@"
