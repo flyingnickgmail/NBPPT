@@ -41,7 +41,18 @@ try {
   const fixture = JSON.parse(line);
   await waitForServer(fixture.origin);
   receipt.origin = fixture.origin; receipt.page_path = '/';
-  browser = await chromium.launch({headless:true,chromiumSandbox:true});
+  const browserEnv={...process.env};
+  if(process.platform==='linux'){
+    const socketRoot=process.env.NBPPT_HTML_SOCKET_ROOT;
+    assert(socketRoot&&path.isAbsolute(socketRoot)&&Buffer.byteLength(socketRoot)<=40,'Linux browser acceptance needs the private short IPC root');
+    const stat=await fs.lstat(socketRoot);
+    assert(stat.isDirectory()&&!stat.isSymbolicLink()&&await fs.realpath(socketRoot)===socketRoot&&stat.uid===process.getuid()&&(stat.mode&0o077)===0,'Unsafe browser acceptance IPC root');
+    browserEnv.TMPDIR=socketRoot;browserEnv.TMP=socketRoot;browserEnv.TEMP=socketRoot;
+  }
+  // Use the same pinned full Chromium that the render gate and exact-path
+  // AppArmor policy verified, rather than an unapproved headless-shell binary.
+  browser = await chromium.launch({headless:true,chromiumSandbox:true,
+    executablePath:process.env.NBPPT_CHROMIUM_BIN||chromium.executablePath(),env:browserEnv});
   context = await browser.newContext({viewport:{width:1280,height:900}, acceptDownloads:true});
   // All browser requests stay on this fixture, including media. Block external egress.
   await context.route('**/*', route => new URL(route.request().url()).origin === fixture.origin
