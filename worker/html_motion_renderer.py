@@ -12,7 +12,7 @@ from worker.live_action_renderer import run
 
 ROOT=Path(__file__).resolve().parent/'html_motion'
 ENV_KEYS=('NBPPT_HTML_NODE','NBPPT_PLAYWRIGHT_MODULE','NBPPT_CHROMIUM_BIN','NBPPT_CHROMIUM_VERSION',
-          'NBPPT_CHROMIUM_SHA256','NBPPT_HTML_FONT','NBPPT_HTML_FONT_SHA256')
+          'NBPPT_CHROMIUM_SHA256','NBPPT_HTML_FONT','NBPPT_HTML_FONT_SHA256','NBPPT_HTML_SOCKET_ROOT')
 
 
 def preflight():

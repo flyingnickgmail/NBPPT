@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
+import tempfile
 import time
 
 import pytest
@@ -60,6 +62,9 @@ def test_actual_html_lottie_chunks_seek_deterministically_and_keep_native_geomet
     assert all(r['first_sha256']==r['reseek_sha256'] for r in ledger['seek_determinism'])
     assert not any(arg in ('--no-sandbox','--disable-setuid-sandbox') for arg in browser['arguments'])
     assert browser['profile']==str(job/'html-render/profile')
+    if sys.platform=='linux':
+        assert Path(browser['socket_temp']).parent==Path(os.environ['NBPPT_HTML_SOCKET_ROOT'])
+        assert browser['profile'].startswith(str(job))
     assert all(str(job/'html-render') in a for a in browser['arguments'] if any(k in a for k in ('--user-data-dir=','--disk-cache-dir=','--crash-dumps-dir=')))
     # Exercise the independent final-boundary check using the concatenated file.
     import shutil
@@ -70,6 +75,25 @@ def test_actual_html_lottie_chunks_seek_deterministically_and_keep_native_geomet
     ledger['chunks'][1]['start_frame']-=1
     (job/'staging/render_chunks.json').write_text(json.dumps(ledger))
     with pytest.raises(ValueError,match='时间轴'):verify_motion_chunks(spec,job/'staging')
+
+
+@pytest.mark.parametrize('unsafe',['missing','public','symlink'])
+def test_linux_socket_root_is_operator_owned_and_never_implicitly_shared(tmp_path,unsafe):
+    if sys.platform!='linux':return
+    require_runtime()
+    work=tmp_path/'socket-check';work.mkdir()
+    config={'font':os.environ['NBPPT_HTML_FONT'],'font_sha256':os.environ['NBPPT_HTML_FONT_SHA256']}
+    (work/'config.json').write_text(json.dumps(config))
+    with tempfile.TemporaryDirectory(prefix='',dir=os.environ['NBPPT_HTML_SOCKET_ROOT']) as short:
+        root=Path(short)
+        if unsafe=='public':root.chmod(0o755)
+        if unsafe=='symlink':
+            link=root/'s';link.symlink_to(root,target_is_directory=True);root=link
+        environment={**os.environ,'NBPPT_HTML_SOCKET_ROOT':'' if unsafe=='missing' else str(root)}
+        result=subprocess.run([os.environ['NBPPT_HTML_NODE'],str(ROOT/'render.mjs'),str(work)],
+                              env=environment,capture_output=True,text=True,timeout=15)
+        assert result.returncode and 'Linux Chromium socket root' in result.stderr
+        assert not (work/'browser.json').exists()
 
 
 def test_real_browser_cancellation_closes_its_own_profile_processes(tmp_path,monkeypatch):

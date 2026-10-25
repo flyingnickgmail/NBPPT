@@ -23,17 +23,32 @@ const scene=fs.readFileSync(path.join(here,'scene.js'),'utf8')+
  (config.story_profile==='parcel-story-v1'?'\n'+fs.readFileSync(path.join(here,'story_scene.js'),'utf8'):'');
 const font=fs.readFileSync(config.font);
 if(sha(font)!==config.font_sha256)throw Error('Trusted font changed');
-let context,encoder; const blocked=[],errors=[],chunks=[];let chunkBytes=0;
-async function cleanup(){if(encoder&&!encoder.killed)encoder.kill('SIGTERM');if(context)await context.close();}
+let context,encoder,socketTemp; const blocked=[],errors=[],chunks=[];let chunkBytes=0;
+async function cleanup(){
+ if(encoder&&!encoder.killed)encoder.kill('SIGTERM');if(context)await context.close();
+ // Only remove this invocation's empty IPC directory; preserve any leftovers.
+ if(socketTemp){try{fs.rmdirSync(socketTemp);}catch(e){if(!['ENOENT','ENOTEMPTY'].includes(e.code))throw e;}}
+}
 process.on('SIGTERM',()=>cleanup().finally(()=>process.exit(143)));
 process.on('SIGINT',()=>cleanup().finally(()=>process.exit(130)));
 const profile=path.join(work,'profile'), temp=path.join(work,'tmp');fs.mkdirSync(temp,{recursive:true});
 try {
+ let browserTemp=temp;
+ if(process.platform==='linux'){
+  const root=process.env.NBPPT_HTML_SOCKET_ROOT;
+  if(!root||!path.isAbsolute(root)||Buffer.byteLength(root)>40)throw Error('Linux Chromium socket root must be an absolute operator path of at most 40 bytes');
+  const stat=fs.lstatSync(root);
+  if(!stat.isDirectory()||stat.isSymbolicLink()||fs.realpathSync(root)!==root||stat.uid!==process.getuid()||(stat.mode&0o077)!==0)
+   throw Error('Linux Chromium socket root must be canonical, private and owned by the renderer');
+  // Linux AF_UNIX paths are limited to 108 bytes. Job/profile/cache/log paths
+  // remain in the job; only Chromium's ephemeral IPC sockets use a short root.
+  socketTemp=fs.mkdtempSync(path.join(root,'r-'));browserTemp=socketTemp;
+ }
  context=await chromium.launchPersistentContext(profile,{
   executablePath:executable,headless:true,chromiumSandbox:true,acceptDownloads:false,serviceWorkers:'block',
   ignoreDefaultArgs:['--disable-dev-shm-usage'],
   viewport:{width:config.width,height:config.height},deviceScaleFactor:1,locale:'zh-CN',timezoneId:'UTC',
-  env:{PATH:process.env.PATH,HOME:path.join(work,'home'),TMPDIR:temp,TMP:temp,TEMP:temp,XDG_CACHE_HOME:path.join(work,'cache')},
+  env:{PATH:process.env.PATH,HOME:path.join(work,'home'),TMPDIR:browserTemp,TMP:browserTemp,TEMP:browserTemp,XDG_CACHE_HOME:path.join(work,'cache')},
   args:[`--disk-cache-dir=${path.join(work,'cache')}`,'--disk-cache-size=134217728',`--crash-dumps-dir=${path.join(work,'crashes')}`,
         '--disable-breakpad','--disable-crash-reporter','--disable-background-networking','--disable-component-update',
         '--enable-automation','--disable-gpu','--disable-skia-runtime-opts','--disable-partial-raster',
@@ -47,7 +62,7 @@ try {
  if(command.arguments.some(arg=>arg==='--no-sandbox'||arg==='--disable-setuid-sandbox'))throw Error('Sandbox disabling flags forbidden');
  const processes=await session.send('SystemInfo.getProcessInfo');
  fs.writeFileSync(path.join(work,'browser.json'),JSON.stringify({version,sha256:expected,playwright:'1.62.1',
-   profile,arguments:command.arguments,pids:processes.processInfo.map(p=>({pid:p.id,type:p.type}))},null,2));
+   profile,socket_temp:browserTemp,arguments:command.arguments,pids:processes.processInfo.map(p=>({pid:p.id,type:p.type}))},null,2));
  const nonce=crypto.randomBytes(18).toString('base64');
  const html=`<!doctype html><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'">
  <style>@font-face{font-family:MotionCJK;src:url(data:font/collection;base64,${font.toString('base64')})}*{box-sizing:border-box}body{margin:0;background:#142D33;overflow:hidden}svg#stage{position:absolute;width:100vw;height:100vh}#beat{position:absolute;left:5%;right:5%;bottom:13%;height:24px}#track{position:absolute;bottom:0;height:3px;left:0;right:0;background:#24454b}#route{height:100%;background:#dc7247}</style>

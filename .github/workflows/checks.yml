@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 20
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.quality-output/browsers
+      NBPPT_HTML_SOCKET_ROOT: /home/nbppt-ci/html-sockets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,6 +64,7 @@ jobs:
           # runner account also owns Actions services; use a dedicated test UID
           # just as production uses a separate non-root execution account.
           sudo useradd --system --create-home --user-group nbppt-ci
+          sudo install -d -m 700 -o nbppt-ci -g nbppt-ci "$NBPPT_HTML_SOCKET_ROOT"
           sudo chown -R nbppt-ci:nbppt-ci "$GITHUB_WORKSPACE"
           sudo install -d -o nbppt-ci -g nbppt-ci "$NBPPT_TEST_ROOT"
           # Hosted runner ancestors are private. Grant only traversal to the
@@ -74,7 +76,7 @@ jobs:
               NBPPT_CI_PARENT="$(dirname "$NBPPT_CI_PARENT")"
             done
           done
-          sudo -u nbppt-ci env PATH="$PATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" PYTHONDONTWRITEBYTECODE=1 bash tools/check.sh --deployment
+          sudo -u nbppt-ci env PATH="$PATH" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" NBPPT_HTML_SOCKET_ROOT="$NBPPT_HTML_SOCKET_ROOT" NBPPT_TEST_ROOT="$NBPPT_TEST_ROOT" PYTHONDONTWRITEBYTECODE=1 bash tools/check.sh --deployment
       - name: Stage selected acceptance receipts for the runner
         if: always()
         env:
